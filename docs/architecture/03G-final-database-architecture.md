@@ -619,6 +619,48 @@ Local Supabase is the first test target. Production must remain
 unchanged until local tests pass and managed Supabase Auth behavior is
 validated in a separate isolated test project.
 
+### 9.4 Codespaces-only local development network exception
+
+The project owner has approved a narrowly scoped exception for real
+HTTP/JWT/RLS verification against the local Supabase development stack
+running inside GitHub Codespaces. This approval does not authorize use
+of production Supabase, production credentials or data, or any other
+environment.
+
+For this development-only test, Kong may retain its Docker wildcard host
+binding on IPv4 and IPv6, provided Codespaces port 54321 is Private.
+Do not expose any Supabase port as Public or Organization. Do not change
+firewall or Docker networking, and do not weaken authentication, grants,
+or RLS. If Private visibility cannot be established before a test, do
+not create test users or database objects.
+
+This exception distinguishes four separate controls:
+
+- **Docker host binding:** the wildcard binding listens on host
+  interfaces; by itself it does not prove that the port is publicly
+  reachable.
+- **Codespaces port forwarding:** Private visibility protects the
+  GitHub-forwarded endpoint by requiring the codespace creator to
+  authenticate. It does not change or constrain Docker's wildcard
+  binding.
+- **Codespaces VM and network isolation:** GitHub documents separate
+  VMs and isolated virtual networks for codespaces, with firewalls
+  blocking incoming internet connections and communication between
+  codespaces. The project owner accepts this documented isolation model
+  as the external network boundary for this local-only test.
+- **Docker bridge-network reachability:** this is a separate internal
+  network boundary. Private port visibility does not prove or change
+  which containers can reach one another over Docker networks.
+
+This exception is not a claim that Private visibility alone provides
+host-level isolation or that the wildcard-bound port is publicly
+reachable. It applies only while the test uses local development
+services, remains limited to the approved verification, and cleans up
+all temporary users and database objects.
+
+Reference: [Security in GitHub Codespaces — environment isolation and
+port forwarding](https://docs.github.com/en/codespaces/reference/security-in-github-codespaces).
+
 ## 10. Unresolved decisions
 
 Do not silently decide: 1. field-level validation for each stage; 2.
