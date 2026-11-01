@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "node --conditions=react-server --import tsx --test src/lib/ai/mentor/*.test.ts"
+    "test": "node --conditions=react-server --import tsx --test src/lib/ai/mentor/*.test.ts src/lib/ideas/*.test.ts"
   },
   "dependencies": {
     "@ai-sdk/gateway": "^4.0.132",

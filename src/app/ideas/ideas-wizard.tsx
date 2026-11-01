@@ -10,30 +10,32 @@ import {
   type IdeaStageKey,
 } from "@/lib/ideas/stages";
 import {
+  IDEA_QUOTA_LIMIT,
+  canCreateIdea,
+  getAvailableIdeaSlots,
+  isIdeaPortfolioItem,
+  type HumanEvaluationStatus,
+  type IdeaPortfolioItem,
+  type StageStatus,
+} from "@/lib/ideas/portfolio";
+import type { ParticipantWorkspace } from "@/lib/ideas/participant-workspace";
+import { parseDossierHistory } from "@/lib/ideas/dossier-history";
+import {
   mentorFailureResponseSchema,
   mentorSuccessResponseSchema,
 } from "@/lib/ai/mentor/contracts";
 import { shouldDispatchAfterConfirmation } from "@/lib/ai/mentor/classification-dispatch";
 import ClassificationPanel from "./classification-panel";
+import ParticipantScorecard from "./participant-scorecard";
+import DossierPreview, {
+  DossierPreviewEntryPoint,
+} from "./dossier-preview";
+import DossierHistoryInspector, {
+  DossierHistoryEntryPoint,
+  type DossierHistoryViewState,
+} from "./dossier-history-inspector";
 
-type IdeaStatus = "draft" | "in_progress" | "submitted";
-type StageStatus =
-  | "not_started"
-  | "in_progress"
-  | "pending_confirmation"
-  | "confirmed"
-  | "needs_revision"
-  | "locked";
-
-type Idea = {
-  id: string;
-  status: IdeaStatus;
-  revision: number;
-  current_step: number;
-  submitted_at: string | null;
-  created_at: string;
-  updated_at: string;
-};
+type Idea = IdeaPortfolioItem;
 
 type IdeaDraftData = Record<string, unknown> & {
   content?: string;
@@ -220,9 +222,22 @@ function statusLabel(status: StageStatus): string {
 
 function stageStatusLabel(stage: IdeaStage, idea: Idea): string {
   if (stage.stage_number === 7 && idea.status === "submitted") {
-    return "در انتظار بررسی انسانی";
+    return humanEvaluationStatusLabel(idea.evaluationStatus);
   }
   return statusLabel(stage.status);
+}
+
+function humanEvaluationStatusLabel(
+  status: HumanEvaluationStatus | undefined,
+): string {
+  switch (status) {
+    case "in_progress":
+      return "ارزیابی انسانی در حال انجام است";
+    case "completed":
+      return "ارزیابی انسانی تکمیل شده است؛ این وضعیت اعلام نتیجه رقابت نیست";
+    default:
+      return "در انتظار تخصیص یا آغاز بررسی انسانی";
+  }
 }
 
 function statusStyle(status: StageStatus): string {
@@ -242,16 +257,34 @@ function statusStyle(status: StageStatus): string {
   }
 }
 
-export default function IdeasPage() {
+export default function IdeasPage({
+  initialWorkspace,
+}: {
+  initialWorkspace: ParticipantWorkspace;
+}) {
   const supabase = useMemo(() => createClient(), []);
+  const initialProfile =
+    initialWorkspace.kind === "authenticated" ? initialWorkspace.profile : null;
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
-  const [ideas, setIdeas] = useState<Idea[]>([]);
+  const [ideas, setIdeas] = useState<Idea[]>(
+    initialWorkspace.kind === "authenticated" ? initialWorkspace.ideas : [],
+  );
   const [ideasLoading, setIdeasLoading] = useState(false);
-  const [ideasLoaded, setIdeasLoaded] = useState(false);
-  const [ideasError, setIdeasError] = useState<string | null>(null);
+  const [ideasLoaded, setIdeasLoaded] = useState(
+    initialWorkspace.kind === "authenticated",
+  );
+  const [ideasError, setIdeasError] = useState<string | null>(
+    initialWorkspace.kind === "error"
+      ? "فضای کار شما بارگذاری نشد. دوباره تلاش کنید."
+      : null,
+  );
   const [selectedIdea, setSelectedIdea] = useState<Idea | null>(null);
+  const [dossierPreviewOpen, setDossierPreviewOpen] = useState(false);
+  const [dossierHistoryOpen, setDossierHistoryOpen] = useState(false);
+  const [dossierHistoryState, setDossierHistoryState] =
+    useState<DossierHistoryViewState>({ kind: "loading" });
   const [stagesLoading, setStagesLoading] = useState(false);
   const [stagesError, setStagesError] = useState<string | null>(null);
   const [ideaStages, setIdeaStages] = useState<IdeaStage[]>([]);
@@ -311,8 +344,52 @@ export default function IdeasPage() {
   const submissionRequestIds = useRef(new Map<string, string>());
   const pendingSaveRef = useRef<PendingSave | null>(null);
   const handledInitialSelection = useRef(false);
-  const activeUserId = useRef<string | null>(null);
+  const activeUserId = useRef<string | null>(
+    initialWorkspace.kind === "authenticated"
+      ? initialWorkspace.profile.id
+      : null,
+  );
   const stageLoadVersion = useRef(0);
+  const dossierHistoryLoadVersion = useRef(0);
+
+  const loadDossierHistory = useCallback(async (ideaId: string): Promise<void> => {
+    const requestVersion = ++dossierHistoryLoadVersion.current;
+    setDossierHistoryState({ kind: "loading" });
+    try {
+      const response = await fetch(
+        `/api/ideas/history?ideaId=${encodeURIComponent(ideaId)}`,
+        { method: "GET", cache: "no-store" },
+      );
+      if (!response.ok) throw new Error("History request failed.");
+      const payload: unknown = await response.json();
+      const history = isRecord(payload)
+        ? parseDossierHistory(payload.history)
+        : null;
+      if (!history) throw new Error("History response was invalid.");
+      if (requestVersion === dossierHistoryLoadVersion.current) {
+        setDossierHistoryState({ kind: "loaded", history });
+      }
+    } catch {
+      if (requestVersion === dossierHistoryLoadVersion.current) {
+        setDossierHistoryState({ kind: "error" });
+      }
+    }
+  }, []);
+
+  function closeDossierHistory(): void {
+    dossierHistoryLoadVersion.current += 1;
+    setDossierHistoryOpen(false);
+  }
+
+  function toggleDossierHistory(): void {
+    if (!selectedIdea || selectedIdea.status !== "submitted") return;
+    if (dossierHistoryOpen) {
+      closeDossierHistory();
+      return;
+    }
+    setDossierHistoryOpen(true);
+    void loadDossierHistory(selectedIdea.id);
+  }
 
   const refreshMentorAvailability = useCallback(async () => {
     try {
@@ -365,48 +442,49 @@ export default function IdeasPage() {
     if (!requestUserId) return null;
     setIdeasLoading(true);
     setIdeasError(null);
-    const { data, error } = await supabase
-      .from("ideas")
-      .select("id,status,revision,current_step,submitted_at,created_at,updated_at")
-      .order("updated_at", { ascending: false });
-    if (activeUserId.current !== requestUserId) return null;
-    setIdeasLoading(false);
+    try {
+      const response = await fetch("/api/ideas", {
+        method: "GET",
+        cache: "no-store",
+      });
+      if (activeUserId.current !== requestUserId) return null;
+      if (!response.ok) {
+        setIdeasLoaded(false);
+        setIdeasError(
+          response.status === 401
+            ? "نشست شما معتبر نیست یا پایان یافته است. صفحه را تازه‌سازی کنید."
+            : "فضای کار شما از پایگاه داده بارگذاری نشد. دوباره تلاش کنید.",
+        );
+        return null;
+      }
 
-    if (error) {
+      const payload: unknown = await response.json();
+      if (
+        !isRecord(payload) ||
+        !isRecord(payload.profile) ||
+        payload.profile.id !== requestUserId ||
+        (payload.profile.email !== null &&
+          typeof payload.profile.email !== "string") ||
+        !Array.isArray(payload.ideas) ||
+        !payload.ideas.every(isIdeaPortfolioItem)
+      ) {
+        setIdeasLoaded(false);
+        setIdeasError("اطلاعات فضای کار از سرور معتبر نبود.");
+        return null;
+      }
+
+      const ownedIdeas = payload.ideas;
+      setIdeas(ownedIdeas);
+      setIdeasLoaded(true);
+      return ownedIdeas;
+    } catch {
       setIdeasLoaded(false);
-      setIdeasError(getErrorMessage(error));
+      setIdeasError("ارتباط با سرور برقرار نشد. اتصال را بررسی و دوباره تلاش کنید.");
       return null;
+    } finally {
+      if (activeUserId.current === requestUserId) setIdeasLoading(false);
     }
-
-    if (
-      !Array.isArray(data) ||
-      data.some(
-        (idea) =>
-          !isRecord(idea) ||
-          typeof idea.id !== "string" ||
-          !["draft", "in_progress", "submitted"].includes(
-            String(idea.status),
-          ) ||
-          !Number.isInteger(idea.revision) ||
-          !Number.isInteger(idea.current_step) ||
-          Number(idea.current_step) < 1 ||
-          Number(idea.current_step) > 7 ||
-          (idea.submitted_at !== null &&
-            typeof idea.submitted_at !== "string") ||
-          typeof idea.created_at !== "string" ||
-          typeof idea.updated_at !== "string",
-      )
-    ) {
-      setIdeasLoaded(false);
-      setIdeasError("اطلاعات ایده‌ها از پایگاه داده معتبر نیست.");
-      return null;
-    }
-
-    const ownedIdeas = data as Idea[];
-    setIdeas(ownedIdeas);
-    setIdeasLoaded(true);
-    return ownedIdeas;
-  }, [supabase]);
+  }, []);
 
   const loadStages = useCallback(
     async (idea: Idea): Promise<IdeaStage[] | null> => {
@@ -552,6 +630,10 @@ export default function IdeasPage() {
         setIdeasLoaded(false);
         setIdeasError(null);
         setSelectedIdea(null);
+        setDossierPreviewOpen(false);
+        dossierHistoryLoadVersion.current += 1;
+        setDossierHistoryOpen(false);
+        setDossierHistoryState({ kind: "loading" });
         setStagesLoading(false);
         setIdeaStages([]);
         setDrafts({});
@@ -658,8 +740,15 @@ export default function IdeasPage() {
 
   useEffect(() => {
     if (!user) return;
-    void Promise.resolve().then(() => refreshIdeas());
-  }, [user, refreshIdeas]);
+    if (ideasLoaded) return;
+    let active = true;
+    void Promise.resolve().then(() => {
+      if (active) void refreshIdeas();
+    });
+    return () => {
+      active = false;
+    };
+  }, [user, ideasLoaded, refreshIdeas]);
 
   useEffect(() => {
     if (!user || !ideasLoaded || ideasLoading || handledInitialSelection.current) return;
@@ -759,6 +848,10 @@ export default function IdeasPage() {
       return;
     }
     stageLoadVersion.current += 1;
+    dossierHistoryLoadVersion.current += 1;
+    setDossierPreviewOpen(false);
+    setDossierHistoryOpen(false);
+    setDossierHistoryState({ kind: "loading" });
     setNotice(null);
     setIdeaStages([]);
     setDrafts({});
@@ -784,6 +877,10 @@ export default function IdeasPage() {
       return;
     }
     stageLoadVersion.current += 1;
+    dossierHistoryLoadVersion.current += 1;
+    setDossierPreviewOpen(false);
+    setDossierHistoryOpen(false);
+    setDossierHistoryState({ kind: "loading" });
     setSelectedIdea(null);
     setIdeaStages([]);
     setDrafts({});
@@ -1038,7 +1135,13 @@ export default function IdeasPage() {
       }
       if (result.outcome === "not_found_or_already_deleted") {
         const refreshedIdeas = await refreshIdeas();
-        if (!refreshedIdeas?.some((idea) => idea.id === ideaId)) {
+        if (!refreshedIdeas) {
+          setNotice({
+            kind: "error",
+            message:
+              "وضعیت حذف قطعی نیست و فهرست به‌روز نشد؛ ظرفیت باقی‌مانده تا دریافت اطلاعات تازه تغییر نمی‌کند.",
+          });
+        } else if (!refreshedIdeas.some((idea) => idea.id === ideaId)) {
           setSelectedIdea((existing) =>
             existing?.id === ideaId ? null : existing,
           );
@@ -1163,6 +1266,7 @@ export default function IdeasPage() {
         const submittedIdea = {
           ...selectedIdea,
           status: "submitted" as const,
+          evaluationStatus: "awaiting_review" as const,
           current_step:
             typeof result.current_step === "number" &&
             Number.isInteger(result.current_step)
@@ -2012,17 +2116,49 @@ export default function IdeasPage() {
     <main className="flex w-full flex-1 justify-center px-4 py-8 sm:px-6 sm:py-12">
       <div className="w-full max-w-5xl">
         <header className="mb-8">
-          <p className="text-sm font-medium text-foreground/60">جوانه</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight">
-            ثبت و توسعه ایده
-          </h1>
-          <p className="mt-3 max-w-3xl leading-7 text-foreground/70">
-            ایده‌ها و مراحل ذخیره‌شده شما از پایگاه داده بارگذاری می‌شوند. هر
-            تغییر با نسخه‌بندی و کنترل هم‌زمانی ذخیره خواهد شد.
-          </p>
-          <p className="mt-2 text-sm font-medium text-foreground/60">
-            ایده‌های فعال: {ideasLoaded ? ideas.length : "—"} از ۳
-          </p>
+          <div className="flex flex-col gap-4 rounded-2xl border border-foreground/10 bg-white p-5 shadow-sm dark:bg-neutral-950 sm:flex-row sm:items-center sm:justify-between sm:p-7">
+            <div>
+              <p className="text-sm font-medium text-foreground/60">جوانه · فضای مشارکت‌کننده</p>
+              <h1 className="mt-2 text-3xl font-semibold tracking-tight">
+                فضای کار من
+              </h1>
+              <p className="mt-2 text-sm leading-6 text-foreground/70">
+                ایده‌های من <span aria-hidden="true">/</span> مدیریت و ادامه مسیر ایده‌ها
+              </p>
+            </div>
+            <div className="min-w-0 rounded-xl bg-foreground/[0.04] px-4 py-3 sm:max-w-xs">
+              <p className="text-xs text-foreground/60">حساب مشارکت‌کننده</p>
+              <p className="mt-1 break-all text-sm font-medium" dir="ltr">
+                {user.email ??
+                  (user.id === initialProfile?.id
+                    ? initialProfile.email
+                    : null) ??
+                  user.id}
+              </p>
+            </div>
+          </div>
+
+          <section
+            aria-label="خلاصه سهمیه ایده‌ها"
+            className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3"
+          >
+            <div className="rounded-xl border border-foreground/10 bg-white p-4 dark:bg-neutral-950">
+              <p className="text-sm text-foreground/60">ایده‌های استفاده‌شده</p>
+              <p className="mt-1 text-2xl font-semibold">
+                {ideasLoaded ? ideas.length : "—"}
+              </p>
+            </div>
+            <div className="rounded-xl border border-foreground/10 bg-white p-4 dark:bg-neutral-950">
+              <p className="text-sm text-foreground/60">حداکثر ایده مجاز</p>
+              <p className="mt-1 text-2xl font-semibold">{IDEA_QUOTA_LIMIT}</p>
+            </div>
+            <div className="rounded-xl border border-foreground/10 bg-white p-4 dark:bg-neutral-950">
+              <p className="text-sm text-foreground/60">ظرفیت باقی‌مانده</p>
+              <p className="mt-1 text-2xl font-semibold">
+                {getAvailableIdeaSlots(ideas.length, ideasLoaded) ?? "—"}
+              </p>
+            </div>
+          </section>
         </header>
 
         {notice && (
@@ -2057,7 +2193,8 @@ export default function IdeasPage() {
                   ایده‌های من
                 </h2>
                 <p className="mt-2 text-sm text-foreground/60">
-                  ایجاد ایده و محدودیت تعداد، در پایگاه داده کنترل می‌شود.
+                  برای هر ایده، مرحله فعلی و اقدام بعدی را دنبال کنید. ایده‌های
+                  ثبت‌شده نیز تا بررسی انسانی سهمیه شما را اشغال می‌کنند.
                 </p>
               </div>
               <button
@@ -2068,9 +2205,11 @@ export default function IdeasPage() {
                   !createRequestStorageReady ||
                   pendingCreateStorageError !== null ||
                   ideasLoading ||
-                  (ideasLoaded &&
-                    ideas.length >= 3 &&
-                    pendingCreateRequestId === null)
+                  !canCreateIdea(
+                    ideas.length,
+                    ideasLoaded,
+                    pendingCreateRequestId !== null,
+                  )
                 }
                 className="inline-flex min-h-11 items-center justify-center rounded-lg bg-foreground px-5 font-medium text-background transition-opacity hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-50"
               >
@@ -2111,40 +2250,110 @@ export default function IdeasPage() {
                 {ideas.map((idea) => (
                   <li
                     key={idea.id}
-                    className="flex flex-col gap-3 py-5 sm:flex-row sm:items-center sm:justify-between"
+                    className="py-5"
                   >
-                    <div>
-                      <p className="font-medium">
-                        ایده {idea.id.slice(0, 8)}
-                      </p>
-                      <p className="mt-1 text-sm text-foreground/60">
-                        نسخه {idea.revision} ·{" "}
-                        {idea.status === "draft"
-                          ? "پیش‌نویس"
-                          : idea.status === "in_progress"
-                            ? "در حال توسعه"
-                            : "ثبت‌شده"}
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={() => selectIdea(idea)}
-                        className="min-h-10 rounded-lg border border-foreground/20 px-4 font-medium hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-offset-2"
-                      >
-                        باز کردن ایده
-                      </button>
-                      {idea.status !== "submitted" && (
-                        <button
-                          type="button"
-                          onClick={() => void deleteIdea(idea)}
-                          disabled={deleting}
-                          className="min-h-10 rounded-lg border border-red-300 px-4 text-sm font-medium text-red-800 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-200"
+                    <article className="rounded-xl border border-foreground/10 p-4 sm:p-5">
+                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0">
+                          <h3 className="font-semibold">
+                            ایده {idea.id.slice(0, 8)}
+                          </h3>
+                          <p className="mt-1 text-sm text-foreground/60">
+                            شناسه: <span dir="ltr">{idea.id}</span> · نسخه {idea.revision}
+                          </p>
+                          <p className="mt-3 inline-flex rounded-full bg-foreground/[0.06] px-3 py-1 text-sm font-medium">
+                            {idea.status === "submitted"
+                              ? "ثبت نهایی‌شده"
+                              : idea.completedStageCount === 6
+                                ? "مراحل توسعه کامل · آماده ثبت نهایی"
+                                : idea.status === "draft"
+                                  ? "پیش‌نویس در حال توسعه"
+                                  : "در حال توسعه"}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => selectIdea(idea)}
+                            className="inline-flex min-h-10 items-center rounded-lg border border-foreground/20 px-4 font-medium hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-offset-2"
+                          >
+                            ادامه کار
+                          </button>
+                          {idea.status !== "submitted" && (
+                            <button
+                              type="button"
+                              onClick={() => void deleteIdea(idea)}
+                              disabled={deleting}
+                              className="min-h-10 rounded-lg border border-red-300 px-4 text-sm font-medium text-red-800 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-200"
+                            >
+                              حذف دائمی
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                        <p className="text-sm leading-6">
+                          مرحله فعلی:{" "}
+                          <span className="font-medium">
+                            {IDEA_STAGES[idea.current_step - 1]?.title ??
+                              `مرحله ${idea.current_step}`}
+                          </span>
+                        </p>
+                        <p className="text-sm leading-6">
+                          وضعیت مرحله:{" "}
+                          <span className="font-medium">
+                            {idea.status === "submitted"
+                              ? "در انتظار بررسی انسانی"
+                              : statusLabel(idea.currentStageStatus)}
+                          </span>
+                        </p>
+                        <p className="text-sm leading-6">
+                          اقدام بعدی:{" "}
+                          <span className="font-medium">
+                            {idea.nextAction === "awaiting_review"
+                              ? humanEvaluationStatusLabel(
+                                  idea.evaluationStatus,
+                                )
+                              : idea.nextAction === "submit"
+                                ? "ثبت نهایی ایده"
+                                : idea.nextAction === "confirm"
+                                  ? `تأیید مرحله ${idea.current_step}`
+                                  : idea.nextAction === "revise"
+                                    ? `بازبینی مرحله ${idea.current_step}`
+                                    : `ادامه مرحله ${idea.current_step}`}
+                          </span>
+                        </p>
+                      </div>
+
+                      <div className="mt-4">
+                        <div className="mb-2 flex items-center justify-between gap-3 text-sm">
+                          <span>
+                            {idea.completedStageCount} از ۶ مرحله توسعه تکمیل شده
+                          </span>
+                          {idea.status === "submitted" && (
+                            <span className="text-foreground/60">
+                              مرحله ۷: بررسی انسانی
+                            </span>
+                          )}
+                        </div>
+                        <div
+                          role="progressbar"
+                          aria-label={`پیشرفت ایده ${idea.id.slice(0, 8)}`}
+                          aria-valuemin={0}
+                          aria-valuemax={6}
+                          aria-valuenow={idea.completedStageCount}
+                          className="h-2 overflow-hidden rounded-full bg-foreground/10"
                         >
-                          حذف دائمی
-                        </button>
-                      )}
-                    </div>
+                          <div
+                            className="h-full rounded-full bg-foreground"
+                            style={{
+                              width: `${(idea.completedStageCount / 6) * 100}%`,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </article>
                   </li>
                 ))}
               </ul>
@@ -2192,6 +2401,19 @@ export default function IdeasPage() {
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
+                <DossierPreviewEntryPoint
+                  disabled={
+                    stagesLoading ||
+                    stagesError !== null ||
+                    ideaStages.length !== 7
+                  }
+                  onClick={() => setDossierPreviewOpen(true)}
+                />
+                <DossierHistoryEntryPoint
+                  status={selectedIdea.status}
+                  isOpen={dossierHistoryOpen}
+                  onClick={toggleDossierHistory}
+                />
                 <button
                   type="button"
                   onClick={() => void reloadSelectedIdea()}
@@ -2218,24 +2440,64 @@ export default function IdeasPage() {
               </div>
             </div>
 
+            {dossierPreviewOpen &&
+              !stagesLoading &&
+              stagesError === null &&
+              ideaStages.length === 7 && (
+                <DossierPreview
+                  key={selectedIdea.id}
+                  ideaId={selectedIdea.id}
+                  stages={ideaStages}
+                  drafts={drafts}
+                  syncStatus={syncStatus}
+                  pendingSaveStageNumber={
+                    pendingSave?.ideaId === selectedIdea.id
+                      ? pendingSave.stageNumber
+                      : null
+                  }
+                  conflictStageNumber={draftConflict?.stageNumber ?? null}
+                  onClose={() => setDossierPreviewOpen(false)}
+                />
+              )}
+
             {selectedIdea.status === "submitted" && (
-              <div
-                role="status"
-                className="mb-6 rounded-xl border border-foreground/10 bg-foreground/[0.03] p-4 text-sm leading-7"
-              >
-                {editingWindowActive && selectedIdea.submitted_at ? (
-                  <>
-                    ویرایش معمول پرونده فعال است؛{" "}
-                    {remainingEditingMs < 60_000
-                      ? "کمتر از یک دقیقه"
-                      : `${Math.floor(remainingEditingMs / 3_600_000)} ساعت و ${Math.floor((remainingEditingMs % 3_600_000) / 60_000)} دقیقه`}{" "}
-                    باقی مانده است. این بازه از زمان ثبت نهایی محاسبه می‌شود.
-                  </>
-                ) : (
-                  "مهلت ویرایش معمول این پرونده پایان یافته است. محتوای آن قفل است و امکان بازگشایی از این مسیر وجود ندارد."
-                )}
-              </div>
+              <>
+                <div
+                  role="status"
+                  className="mb-4 rounded-xl border border-foreground/10 bg-foreground/[0.03] p-4 text-sm leading-7"
+                >
+                  {editingWindowActive && selectedIdea.submitted_at ? (
+                    <>
+                      ویرایش معمول پرونده فعال است؛{" "}
+                      {remainingEditingMs < 60_000
+                        ? "کمتر از یک دقیقه"
+                        : `${Math.floor(remainingEditingMs / 3_600_000)} ساعت و ${Math.floor((remainingEditingMs % 3_600_000) / 60_000)} دقیقه`}{" "}
+                      باقی مانده است. این بازه از زمان ثبت نهایی محاسبه می‌شود.
+                    </>
+                  ) : (
+                    "مهلت ویرایش معمول این پرونده پایان یافته است. محتوای آن قفل است و امکان بازگشایی از این مسیر وجود ندارد."
+                  )}
+                </div>
+                <div
+                  role="status"
+                  className="mb-6 rounded-xl border border-foreground/10 bg-foreground/[0.03] p-4 text-sm leading-7"
+                >
+                  <p className="font-semibold">وضعیت ارزیابی انسانی</p>
+                  <p>{humanEvaluationStatusLabel(selectedIdea.evaluationStatus)}</p>
+                </div>
+              </>
             )}
+
+            {dossierHistoryOpen && selectedIdea.status === "submitted" && (
+              <DossierHistoryInspector
+                currentRevision={revision ?? selectedIdea.revision}
+                state={dossierHistoryState}
+                onRetry={() => void loadDossierHistory(selectedIdea.id)}
+                onClose={closeDossierHistory}
+              />
+            )}
+
+            <ParticipantScorecard key={selectedIdea.id} ideaId={selectedIdea.id} />
 
             {stagesError && (
               <div className="mb-6 rounded-xl bg-red-50 p-4 text-sm leading-7 text-red-900 dark:bg-red-950/40 dark:text-red-200">

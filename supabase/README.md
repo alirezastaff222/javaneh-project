@@ -186,6 +186,21 @@ a dossier-reopening permission or audit policy. See
 `../docs/architecture/M9R10-data-resilience.md` for the authorization
 dependency and lifecycle details.
 
+Phase 8 Package 7A adds the Stage 7 human evaluation lifecycle in
+`migrations/20261101230000_javaneh_human_evaluation_lifecycle.sql`. Successful
+submission creates one `awaiting_review` cycle atomically; assignment is
+separate from starting, and the assigned evaluator may start only after the
+database-controlled 168-hour dossier editing window expires. Start records the
+stable idea revision; completion creates no score or competition result.
+Evaluation assignment-manager and human-evaluator permissions are separate
+from scoring roles and must be provisioned by a privileged database operator.
+The owner-scoped status RPC exposes only lifecycle state and safe timestamps.
+Run `tests/human_evaluation_lifecycle.sql` as `supabase_admin` against an
+isolated local/test database after applying all preceding migrations; it rolls
+back its fixtures. Feedback publication, jury scoring, and notifications are
+not part of this package. See
+`../docs/architecture/phase8-human-evaluation-lifecycle.md`.
+
 M9R11 serverless-safe mentor controls are added by
 `migrations/20261101120000_javaneh_ai_mentor_request_controls.sql`. It adds a
 content-free table keyed by participant and request UUID, protected by forced
@@ -337,3 +352,17 @@ psql -X -v ON_ERROR_STOP=1 -U supabase_admin -d <disposable_database> \
 
 Drop the disposable database after all checks. Never run these committed
 concurrency fixtures against production or a persistent/shared database.
+
+The MVP competition applicability and participant scorecard are added by
+`migrations/20261101210000_javaneh_competition_applicability_scorecard.sql`.
+The migration reuses the immutable competition-to-scoring-version relationship,
+adds a global one-active-competition index and an initially-null idea
+participation link, and exposes one-time assignment only to existing Platform
+Owners and Scoring Administrators. Assignment refuses inactive competitions and
+incompatible validation or ledger history; it never backfills ideas. The
+participant scorecard RPC derives the caller from `auth.uid()`, returns safe
+catalog criteria and sanitized ledger-derived development points, and replaces
+direct participant access to raw ledger, validation, and aggregate score rows.
+Run `tests/competition_applicability_scorecard.sql` as `supabase_admin` against
+an isolated local or dedicated test database after applying the ordered
+migrations. It rolls back all fixtures. Do not use a persistent/shared database.

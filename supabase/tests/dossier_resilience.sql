@@ -293,6 +293,181 @@ BEGIN
 END
 $m9r10_snapshot_assertion$;
 
+SET LOCAL ROLE authenticated;
+DO $m9r10_second_history_snapshot$
+DECLARE
+  v_idea_id uuid := pg_catalog.current_setting('test.m9r10_idea_id')::uuid;
+  v_revision integer;
+  v_result jsonb;
+BEGIN
+  SELECT idea.revision INTO v_revision
+    FROM public.ideas AS idea
+    WHERE idea.id = v_idea_id;
+  v_result := public.edit_submitted_idea(
+    v_idea_id,
+    'a9a50000-0000-4000-8000-000000000009',
+    v_revision,
+    '[{"stage_number":1,"data":{"content":"second submitted edit"}}]'::jsonb
+  );
+  IF v_result->>'outcome' <> 'applied' THEN
+    RAISE EXCEPTION 'Second history fixture edit failed: %', v_result;
+  END IF;
+END
+$m9r10_second_history_snapshot$;
+DO $m9r10_empty_history_fixture$
+DECLARE
+  v_result jsonb;
+BEGIN
+  v_result := public.create_idea(
+    'a9a30000-0000-4000-8000-000000000003'
+  );
+  IF v_result->>'outcome' <> 'created' THEN
+    RAISE EXCEPTION 'Empty-history fixture creation failed: %', v_result;
+  END IF;
+  PERFORM pg_catalog.set_config(
+    'test.m9r10_empty_history_idea', v_result->>'idea_id', true
+  );
+END
+$m9r10_empty_history_fixture$;
+DO $m9r10_history_access_assertion$
+DECLARE
+  v_idea_id uuid := pg_catalog.current_setting('test.m9r10_idea_id')::uuid;
+  v_empty_idea_id uuid :=
+    pg_catalog.current_setting('test.m9r10_empty_history_idea')::uuid;
+  v_nonexistent_id uuid := 'a9a60000-0000-4000-8000-000000000099';
+  v_revisions integer[];
+  v_count integer;
+  v_history jsonb;
+BEGIN
+  SELECT pg_catalog.array_agg(history.revision),
+         pg_catalog.count(*)::integer
+    INTO v_revisions, v_count
+    FROM public.get_own_submitted_idea_dossier_history(v_idea_id) AS history;
+  IF v_count <> 2 OR pg_catalog.cardinality(v_revisions) <> 2
+     OR v_revisions[1] >= v_revisions[2] THEN
+    RAISE EXCEPTION 'Owner did not receive their ordered dossier history';
+  END IF;
+
+  SELECT pg_catalog.to_jsonb(history)
+    INTO v_history
+    FROM public.get_own_submitted_idea_dossier_history(v_idea_id) AS history;
+  IF v_history ? 'actor_id' OR v_history ? 'request_id'
+     OR (v_history ?& ARRAY['revision', 'dossier', 'created_at']) IS NOT TRUE THEN
+    RAISE EXCEPTION 'History RPC returned an unsafe participant payload: %',
+      v_history;
+  END IF;
+
+  BEGIN
+    PERFORM 1
+      FROM public.get_own_submitted_idea_dossier_history(v_empty_idea_id);
+    RAISE EXCEPTION 'A non-submitted idea was not rejected';
+  EXCEPTION
+    WHEN insufficient_privilege THEN
+      NULL;
+  END;
+  BEGIN
+    PERFORM 1
+      FROM public.get_own_submitted_idea_dossier_history(v_nonexistent_id);
+    RAISE EXCEPTION 'A nonexistent idea was not rejected';
+  EXCEPTION
+    WHEN insufficient_privilege THEN
+      NULL;
+  END;
+
+  PERFORM pg_catalog.set_config(
+    'request.jwt.claim.sub', 'a9a10000-0000-4000-8000-000000000002', true
+  );
+  BEGIN
+    PERFORM 1
+      FROM public.get_own_submitted_idea_dossier_history(v_idea_id);
+    RAISE EXCEPTION 'A non-owner was not rejected';
+  EXCEPTION
+    WHEN insufficient_privilege THEN
+      NULL;
+  END;
+  PERFORM pg_catalog.set_config(
+    'request.jwt.claim.sub', 'a9a10000-0000-4000-8000-000000000001', true
+  );
+
+  BEGIN
+    PERFORM 1 FROM public.idea_dossier_versions;
+    RAISE EXCEPTION 'Authenticated direct snapshot SELECT unexpectedly succeeded';
+  EXCEPTION
+    WHEN insufficient_privilege THEN
+      NULL;
+  END;
+END
+$m9r10_history_access_assertion$;
+RESET ROLE;
+
+SET LOCAL ROLE javaneh_identity_executor;
+UPDATE public.ideas AS idea
+  SET status = 'submitted',
+      current_step = 7,
+      submitted_at = pg_catalog.clock_timestamp()
+  WHERE idea.id =
+    pg_catalog.current_setting('test.m9r10_empty_history_idea')::uuid;
+RESET ROLE;
+
+SET LOCAL ROLE authenticated;
+DO $m9r10_empty_history_assertion$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM public.get_own_submitted_idea_dossier_history(
+        pg_catalog.current_setting('test.m9r10_empty_history_idea')::uuid
+      )
+  ) THEN
+    RAISE EXCEPTION 'A submitted idea without snapshots returned history';
+  END IF;
+END
+$m9r10_empty_history_assertion$;
+RESET ROLE;
+
+DO $m9r10_history_privilege_assertion$
+DECLARE
+  v_function oid := pg_catalog.to_regprocedure(
+    'public.get_own_submitted_idea_dossier_history(uuid)'
+  );
+BEGIN
+  IF v_function IS NULL
+     OR pg_catalog.pg_get_userbyid(
+          (SELECT procedure.proowner
+             FROM pg_catalog.pg_proc AS procedure
+             WHERE procedure.oid = v_function)
+        ) <> 'javaneh_identity_executor'
+     OR NOT pg_catalog.has_function_privilege(
+          'authenticated', v_function, 'EXECUTE'
+        )
+     OR pg_catalog.has_function_privilege('anon', v_function, 'EXECUTE')
+     OR pg_catalog.has_function_privilege('service_role', v_function, 'EXECUTE')
+     OR pg_catalog.has_table_privilege(
+          'authenticated', 'public.idea_dossier_versions', 'SELECT'
+        )
+     OR pg_catalog.has_table_privilege(
+          'authenticated', 'public.idea_dossier_versions', 'INSERT'
+        )
+     OR pg_catalog.has_table_privilege(
+          'javaneh_identity_executor',
+          'public.idea_dossier_versions',
+          'INSERT'
+        ) IS NOT TRUE
+     OR NOT EXISTS (
+       SELECT 1
+         FROM pg_catalog.pg_proc AS procedure
+         WHERE procedure.oid = v_function
+           AND procedure.provolatile = 's'
+           AND procedure.prosrc !~* '\m(insert|update|delete)\M'
+           AND pg_catalog.strpos(
+             procedure.prosrc,
+             'ORDER BY version.revision ASC'
+           ) > 0
+     ) THEN
+    RAISE EXCEPTION 'Dossier history RPC ownership or privileges are unsafe';
+  END IF;
+END
+$m9r10_history_privilege_assertion$;
+
 SET LOCAL ROLE javaneh_identity_executor;
 UPDATE public.ideas AS idea
   SET submitted_at = pg_catalog.clock_timestamp() - INTERVAL '169 hours'
@@ -329,7 +504,7 @@ BEGIN
       FROM public.idea_dossier_versions AS version
       WHERE version.idea_id =
         pg_catalog.current_setting('test.m9r10_idea_id')::uuid
-  ) <> 1 THEN
+  ) <> 2 THEN
     RAISE EXCEPTION 'A rejected expired edit created a snapshot';
   END IF;
 END
