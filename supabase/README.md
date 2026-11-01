@@ -268,9 +268,24 @@ adds persisted dispatch metadata and bounded retry policy. It also tightens
 legacy-result restoration to require exactly six active taxonomy axes and a
 valid stored result. The participant panel redispatches pending work on page
 load, waits for active attempt leases, and retries transient failures after
-server-enforced backoff. There are at most three claims per source revision;
-permanent failures are not retried. Expired attempts are reclaimed only by the
-same owner-checked atomic claim RPC.
+server-enforced backoff, and retries network errors plus HTTP 408, 429, and
+5xx responses at most three times in the mounted panel. There are at most three
+database claims per source revision; permanent failures are not retried.
+Expired attempts are reclaimed only by the same owner-checked atomic claim RPC.
+
+`migrations/20261101170000_javaneh_thematic_classification_access.sql`
+replaces the authenticated table-wide state read grant with column-level
+SELECT privileges for the fields then needed by the panel.
+
+`migrations/20261101180000_javaneh_thematic_classification_status_projection.sql`
+revokes those direct state-column grants. Participants now call the narrow
+`get_own_idea_classification_status` RPC, which checks ownership and returns
+only a derived status, source revision IDs, current result ID, and bounded wait
+duration. It evaluates lease and retry deadlines using database time without
+returning the deadlines, attempt counts, failure categories, or claim tokens.
+HTTP retries are at most three retries after the initial request (four requests
+per source revision in one panel mount); database provider claims remain
+separately capped at three per source revision.
 
 Run `tests/thematic_classification.sql` as `supabase_admin` against an isolated
 local or dedicated test database after applying all preceding migrations. It

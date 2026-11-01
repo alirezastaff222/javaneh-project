@@ -67,15 +67,28 @@ can be reclaimed through the atomic claim, which replaces the attempt token so
 an abandoned worker cannot complete afterward. All retries use the
 authenticated endpoint and cannot accept participant-supplied axes,
 percentages, rationales, or an alternative result.
+Completion and failure also lock the state row and reject the attempt as stale
+when its lease is at or before the database clock, even before a reclaim changes
+the token.
+Network failures and HTTP 408, 429, and 5xx responses also use a bounded
+client-side retry to recover when a transient response occurs before a claim is
+persisted. The panel makes at most three additional HTTP retries after the
+initial request (four HTTP requests total per source revision during one
+mount); this is separate from the database limit of three provider claims.
 
 ## Access and presentation
 
-Participants can read their own classification state and only the active
-result for their own idea. Forced RLS and owner predicates apply to state and
-result reads. Participants and `service_role` have no direct classification
-write privileges; narrow security-definer RPCs owned by
-`javaneh_identity_executor` are callable by server-side `service_role` only.
-The taxonomy is readable but not participant-editable.
+Participants can read the active result for their own idea and obtain a
+minimal classification status through the owner-checked
+`get_own_idea_classification_status` RPC. The RPC derives active/expired lease
+and retry-wait status using database time; it never returns lease deadlines,
+attempt counts, failure categories, or claim tokens. Participants and
+`service_role` have no direct classification-state access or write privileges;
+narrow security-definer RPCs owned by `javaneh_identity_executor` are callable
+only by their designated roles. The current-result RLS policy uses the same
+owner-checked projection, so participants do not need direct state-table
+privileges to read their current result. The taxonomy is readable but not
+participant-editable.
 
 The idea workspace presents a Persian RTL, read-only section with current,
 pending, stale, and unavailable states; the primary axis; both secondary axes;

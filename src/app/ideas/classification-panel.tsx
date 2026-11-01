@@ -5,19 +5,31 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import {
   ClassificationDispatchGate,
+  ClassificationRetryTimerRegistry,
   getClassificationDispatchDecision,
-  isClassificationRetryableFailureCategory,
+  isRetryableClassificationHttpStatus,
+  shouldRetryClassificationHttpRequest,
   type ClassificationDispatchState,
 } from "@/lib/ai/mentor/classification-dispatch";
 
-const stateSchema = z
+const stateProjectionSchema = z
   .object({
-    status: z.enum(["pending", "processing", "current", "stale", "failed"]),
+    status: z.enum([
+      "missing",
+      "not_found",
+      "pending",
+      "processing_active",
+      "processing_expired",
+      "current",
+      "stale",
+      "retry_wait",
+      "retry_ready",
+      "failed",
+    ]),
     current_classification_id: z.string().uuid().nullable(),
-    attempt_count: z.number().int().min(0).max(3),
-    last_failure_category: z.string().nullable(),
-    retry_after: z.string().nullable(),
-    lease_expires_at: z.string().nullable(),
+    source_stage_1_revision_id: z.string().uuid().nullable(),
+    source_stage_2_revision_id: z.string().uuid().nullable(),
+    wait_ms: z.number().int().min(0).max(120_000).nullable(),
   })
   .strict();
 
@@ -93,19 +105,16 @@ export default function ClassificationPanel({
   const handledTriggerVersion = useRef(triggerVersion);
   const loadClassificationRef = useRef<() => Promise<void>>(async () => undefined);
   const dispatchGate = useRef(new ClassificationDispatchGate());
+  const retryTimers = useRef(new ClassificationRetryTimerRegistry());
   const stateRetryTimer = useRef<number | null>(null);
-  const networkRetryTimers = useRef(new Map<string, number>());
   const networkRetryCounts = useRef(new Map<string, number>());
 
   const loadClassification = useCallback(async () => {
     const requestVersion = ++loadVersion.current;
-    const { data: stateRow, error: stateError } = await supabase
-      .from("idea_classification_state")
-      .select(
-        "status,current_classification_id,attempt_count,last_failure_category,retry_after,lease_expires_at,source_stage_1_revision_id,source_stage_2_revision_id",
-      )
-      .eq("idea_id", ideaId)
-      .maybeSingle();
+    const { data: projection, error: stateError } = await supabase.rpc(
+      "get_own_idea_classification_status",
+      { p_idea_id: ideaId },
+    );
     if (requestVersion !== loadVersion.current) return;
     if (stateError) {
       setDispatchState(null);
@@ -115,32 +124,39 @@ export default function ClassificationPanel({
     }
     setError(null);
     setAxes([]);
-    if (!stateRow) {
-      setDispatchState(null);
-      setStatus(eligible ? "pending" : "not_ready");
-      return;
-    }
-
-    const parsedState = stateSchema.extend({
-      source_stage_1_revision_id: z.string().uuid(),
-      source_stage_2_revision_id: z.string().uuid(),
-    }).safeParse(stateRow);
+    const parsedState = stateProjectionSchema.safeParse(projection);
     if (!parsedState.success) {
       setDispatchState(null);
       setStatus("unavailable");
       setError("ساختار وضعیت دسته‌بندی معتبر نیست.");
       return;
     }
+    if (
+      parsedState.data.status === "missing" ||
+      parsedState.data.status === "not_found" ||
+      !parsedState.data.source_stage_1_revision_id ||
+      !parsedState.data.source_stage_2_revision_id
+    ) {
+      setDispatchState(null);
+      setStatus(eligible ? "pending" : "not_ready");
+      return;
+    }
+
     setDispatchState({
       status: parsedState.data.status,
-      attempt_count: parsedState.data.attempt_count,
-      last_failure_category: parsedState.data.last_failure_category,
-      retry_after: parsedState.data.retry_after,
-      lease_expires_at: parsedState.data.lease_expires_at,
+      wait_ms: parsedState.data.wait_ms,
       source_stage_1_revision_id: parsedState.data.source_stage_1_revision_id,
       source_stage_2_revision_id: parsedState.data.source_stage_2_revision_id,
     });
-    setStatus(parsedState.data.status);
+    setStatus(
+      parsedState.data.status === "processing_active" ||
+        parsedState.data.status === "processing_expired"
+        ? "processing"
+        : parsedState.data.status === "retry_wait" ||
+            parsedState.data.status === "retry_ready"
+          ? "failed"
+          : parsedState.data.status,
+    );
     if (
       parsedState.data.status !== "current" ||
       !parsedState.data.current_classification_id
@@ -221,9 +237,9 @@ export default function ClassificationPanel({
   }, [loadClassification]);
 
   const dispatchClassification = useCallback(
-    async (key: string) => {
+    async (key: string, sourceKey: string) => {
       if (!eligible || !dispatchGate.current.begin(key)) return;
-      let retryAfterNetworkFailure = true;
+      let retryableRequestFailure = true;
       let requestError: string | null = null;
       try {
         const response = await fetch("/api/classification", {
@@ -231,8 +247,10 @@ export default function ClassificationPanel({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ ideaId }),
         });
-        retryAfterNetworkFailure = false;
         if (!response.ok) {
+          retryableRequestFailure = isRetryableClassificationHttpStatus(
+            response.status,
+          );
           throw new Error("Classification request could not be completed.");
         }
         const body: unknown = await response.json();
@@ -240,19 +258,27 @@ export default function ClassificationPanel({
         if (!responseSchema.safeParse(body).success) {
           throw new Error("Classification status response was invalid.");
         }
-        networkRetryCounts.current.delete(key);
+        retryableRequestFailure = false;
+        networkRetryCounts.current.delete(sourceKey);
       } catch {
         requestError =
           "دسته‌بندی فعلاً دریافت نشد؛ تأیید مرحله و ادامه کار شما حفظ شده است.";
-        const retryCount = (networkRetryCounts.current.get(key) ?? 0) + 1;
-        networkRetryCounts.current.set(key, retryCount);
-        if (retryAfterNetworkFailure && retryCount <= 3) {
-          const timer = window.setTimeout(() => {
-            dispatchGate.current.allowRetry(key);
-            void loadClassificationRef.current();
-            networkRetryTimers.current.delete(key);
-          }, 30_000);
-          networkRetryTimers.current.set(key, timer);
+        const retryCount = (networkRetryCounts.current.get(sourceKey) ?? 0) + 1;
+        networkRetryCounts.current.set(sourceKey, retryCount);
+        if (
+          retryableRequestFailure &&
+          shouldRetryClassificationHttpRequest(retryCount)
+        ) {
+          retryTimers.current.schedule(
+            `${sourceKey}:${key}`,
+            sourceKey,
+            30_000,
+            () => {
+              dispatchGate.current.allowRetry(key);
+              void loadClassificationRef.current();
+            },
+            window,
+          );
         }
       } finally {
         dispatchGate.current.finish();
@@ -274,28 +300,27 @@ export default function ClassificationPanel({
   }, [loadClassification]);
 
   useEffect(() => {
+    const sourceKey = dispatchState
+      ? `${ideaId}:${dispatchState.source_stage_1_revision_id}:${dispatchState.source_stage_2_revision_id}`
+      : `${ideaId}:missing`;
+    if (retryTimers.current.setSourceKey(sourceKey, window)) {
+      networkRetryCounts.current.clear();
+    }
     if (stateRetryTimer.current !== null) {
       window.clearTimeout(stateRetryTimer.current);
       stateRetryTimer.current = null;
     }
     if (!eligible || !dispatchState) return;
 
-    const decision = getClassificationDispatchDecision(
-      dispatchState,
-      Date.now(),
-    );
+    const decision = getClassificationDispatchDecision(dispatchState);
     const key = [
       ideaId,
       dispatchState.status,
-      dispatchState.attempt_count,
-      dispatchState.last_failure_category ?? "",
-      dispatchState.retry_after ?? "",
-      dispatchState.lease_expires_at ?? "",
       dispatchState.source_stage_1_revision_id ?? "",
       dispatchState.source_stage_2_revision_id ?? "",
     ].join(":");
     if (decision.kind === "dispatch") {
-      void Promise.resolve().then(() => dispatchClassification(key));
+      void Promise.resolve().then(() => dispatchClassification(key, sourceKey));
       return;
     }
     if (decision.kind === "wait") {
@@ -317,10 +342,7 @@ export default function ClassificationPanel({
       if (stateRetryTimer.current !== null) {
         window.clearTimeout(stateRetryTimer.current);
       }
-      for (const timer of networkRetryTimers.current.values()) {
-        window.clearTimeout(timer);
-      }
-      networkRetryTimers.current.clear();
+      retryTimers.current.clearAll(window);
       networkRetryCounts.current.clear();
     },
     [],
@@ -331,20 +353,17 @@ export default function ClassificationPanel({
       return;
     }
     handledTriggerVersion.current = triggerVersion;
-    void dispatchClassification(`confirmation:${ideaId}:${triggerVersion}`);
-  }, [dispatchClassification, ideaId, triggerVersion]);
+    retryTimers.current.setSourceKey(
+      `confirmation:${ideaId}:${triggerVersion}`,
+      window,
+    );
+    networkRetryCounts.current.clear();
+    void loadClassificationRef.current();
+  }, [ideaId, triggerVersion]);
 
-  const failureCategory = dispatchState?.last_failure_category;
-  const configurationFailure =
-    failureCategory === "not_configured" ||
-    failureCategory === "authentication";
   const retryScheduled =
-    dispatchState?.status === "failed" &&
-    dispatchState.attempt_count < 3 &&
-    isClassificationRetryableFailureCategory(
-      dispatchState.last_failure_category,
-    ) &&
-    dispatchState.retry_after !== null;
+    dispatchState?.status === "retry_wait" ||
+    dispatchState?.status === "retry_ready";
 
   return (
     <section
@@ -388,11 +407,9 @@ export default function ClassificationPanel({
       )}
       {status === "failed" && (
         <p role="status" className="mt-4 text-sm text-amber-800 dark:text-amber-200">
-          {configurationFailure
-            ? "دسته‌بندی به دلیل آماده نبودن پیکربندی سرویس در دسترس نیست؛ تأیید مرحله‌ها و ادامه کار شما بدون تغییر باقی می‌ماند."
-            : retryScheduled
-              ? "دسته‌بندی با خطای موقت روبه‌رو شد و پس از وقفه‌ای کوتاه دوباره تلاش می‌شود؛ تأیید مرحله‌ها و ادامه کار شما بدون تغییر باقی می‌ماند."
-              : "دسته‌بندی فعلاً در دسترس نیست و تلاش خودکار بیشتری انجام نمی‌شود؛ تأیید مرحله‌ها و ادامه کار شما بدون تغییر باقی می‌ماند."}
+          {retryScheduled
+            ? "دسته‌بندی با خطای موقت روبه‌رو شد و پس از وقفه‌ای کوتاه دوباره تلاش می‌شود؛ تأیید مرحله‌ها و ادامه کار شما بدون تغییر باقی می‌ماند."
+            : "دسته‌بندی فعلاً در دسترس نیست و تلاش خودکار بیشتری انجام نمی‌شود؛ تأیید مرحله‌ها و ادامه کار شما بدون تغییر باقی می‌ماند."}
         </p>
       )}
       {status === "unavailable" && (

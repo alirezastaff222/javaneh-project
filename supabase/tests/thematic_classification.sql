@@ -100,6 +100,39 @@ BEGIN
     'service_role', 'public.idea_classification_results', 'INSERT'
   ) OR pg_catalog.has_table_privilege(
     'service_role', 'public.idea_classification_state', 'UPDATE'
+  ) OR pg_catalog.has_table_privilege(
+    'authenticated', 'public.idea_classification_state', 'SELECT'
+  ) OR pg_catalog.has_any_column_privilege(
+    'authenticated', 'public.idea_classification_state', 'SELECT'
+  ) OR pg_catalog.has_column_privilege(
+    'authenticated', 'public.idea_classification_state', 'idea_id', 'SELECT'
+  ) OR pg_catalog.has_column_privilege(
+    'authenticated', 'public.idea_classification_state', 'status', 'SELECT'
+  ) OR pg_catalog.has_column_privilege(
+    'authenticated', 'public.idea_classification_state',
+    'lease_expires_at', 'SELECT'
+  ) OR pg_catalog.has_column_privilege(
+    'authenticated', 'public.idea_classification_state', 'attempt_token', 'SELECT'
+  ) OR pg_catalog.has_column_privilege(
+    'authenticated', 'public.idea_classification_state', 'attempt_count', 'SELECT'
+  ) OR pg_catalog.has_column_privilege(
+    'authenticated', 'public.idea_classification_state', 'retry_after', 'SELECT'
+  ) OR pg_catalog.has_column_privilege(
+    'authenticated', 'public.idea_classification_state', 'updated_at', 'SELECT'
+  ) OR pg_catalog.has_table_privilege(
+    'authenticated', 'public.idea_classification_state', 'INSERT'
+  ) OR pg_catalog.has_table_privilege(
+    'authenticated', 'public.idea_classification_state', 'UPDATE'
+  ) OR pg_catalog.has_table_privilege(
+    'authenticated', 'public.idea_classification_state', 'DELETE'
+  ) OR NOT pg_catalog.has_function_privilege(
+    'authenticated',
+    'public.get_own_idea_classification_status(uuid)',
+    'EXECUTE'
+  ) OR pg_catalog.has_function_privilege(
+    'service_role',
+    'public.get_own_idea_classification_status(uuid)',
+    'EXECUTE'
   ) OR NOT pg_catalog.has_function_privilege(
     'service_role',
     'public.claim_idea_classification(uuid,uuid,uuid,uuid,text,text,uuid)',
@@ -108,8 +141,17 @@ BEGIN
     'authenticated',
     'public.claim_idea_classification(uuid,uuid,uuid,uuid,text,text,uuid)',
     'EXECUTE'
+  ) OR NOT EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_proc AS function_row
+    WHERE function_row.oid =
+      'public.get_own_idea_classification_status(uuid)'::pg_catalog.regprocedure
+      AND function_row.proowner = 'javaneh_identity_executor'::pg_catalog.regrole
+      AND function_row.prosecdef
+      AND function_row.proconfig = ARRAY['search_path=pg_catalog']
   ) THEN
-    RAISE EXCEPTION 'Participants can directly modify classification data';
+    RAISE EXCEPTION
+      'Classification access is not limited to participant-readable metadata';
   END IF;
 END
 $phase7_taxonomy_test$;
@@ -142,6 +184,7 @@ DECLARE
   v_revision integer;
   v_stage_1_revision_id uuid;
   v_stage_2_revision_id uuid;
+  v_projection jsonb;
 BEGIN
   v_result := public.create_idea('a9950000-0000-4000-8000-000000000001');
   IF v_result->>'outcome' <> 'created' THEN
@@ -164,11 +207,8 @@ BEGIN
   END IF;
   v_result := public.confirm_idea_stage(v_idea_id, 1::smallint, v_revision);
   IF v_result->>'outcome' <> 'confirmed'
-     OR EXISTS (
-       SELECT 1
-       FROM public.idea_classification_state AS state
-       WHERE state.idea_id = v_idea_id
-     ) THEN
+     OR public.get_own_idea_classification_status(v_idea_id)->>'status'
+       <> 'missing' THEN
     RAISE EXCEPTION 'Classification was scheduled before Stage 2 confirmation';
   END IF;
 
@@ -179,11 +219,8 @@ BEGIN
   IF v_result->>'outcome' <> 'applied' THEN
     RAISE EXCEPTION 'Stage 2 draft save failed: %', v_result;
   END IF;
-  IF EXISTS (
-    SELECT 1
-    FROM public.idea_classification_state AS state
-    WHERE state.idea_id = v_idea_id
-  ) THEN
+  IF public.get_own_idea_classification_status(v_idea_id)->>'status'
+     <> 'missing' THEN
     RAISE EXCEPTION 'Stage 2 autosave scheduled classification before confirmation';
   END IF;
   v_revision := (v_result->>'result_revision')::integer;
@@ -202,23 +239,24 @@ BEGIN
   SELECT stage.confirmed_version_id INTO v_stage_2_revision_id
   FROM public.idea_stages AS stage
   WHERE stage.idea_id = v_idea_id AND stage.stage_number = 2;
+  v_projection := public.get_own_idea_classification_status(v_idea_id);
   IF v_stage_1_revision_id IS NULL OR v_stage_2_revision_id IS NULL
-     OR (
-       SELECT state.status
-       FROM public.idea_classification_state AS state
-       WHERE state.idea_id = v_idea_id
-     ) <> 'pending'
-     OR (
-       SELECT state.source_stage_1_revision_id
-       FROM public.idea_classification_state AS state
-       WHERE state.idea_id = v_idea_id
-     ) <> v_stage_1_revision_id
-     OR (
-       SELECT state.source_stage_2_revision_id
-       FROM public.idea_classification_state AS state
-       WHERE state.idea_id = v_idea_id
-     ) <> v_stage_2_revision_id THEN
+     OR v_projection->>'status' <> 'pending'
+     OR (v_projection->>'source_stage_1_revision_id')::uuid
+       <> v_stage_1_revision_id
+     OR (v_projection->>'source_stage_2_revision_id')::uuid
+       <> v_stage_2_revision_id THEN
     RAISE EXCEPTION 'Stage 2 confirmation did not durably queue the current source revisions';
+  END IF;
+  IF v_projection ?| ARRAY[
+    'attempt_token', 'lease_expires_at', 'attempt_count', 'retry_after',
+    'last_failure_category', 'updated_at'
+  ] OR (
+    SELECT pg_catalog.count(*)
+    FROM pg_catalog.jsonb_object_keys(v_projection)
+  ) <> 5 THEN
+    RAISE EXCEPTION 'Status projection exposed operational metadata: %',
+      v_projection;
   END IF;
 
   PERFORM pg_catalog.set_config(
@@ -306,11 +344,8 @@ BEGIN
     RAISE EXCEPTION 'Incomplete backfill Stage 1 confirmation failed: %',
       v_result;
   END IF;
-  IF EXISTS (
-    SELECT 1
-    FROM public.idea_classification_state AS state
-    WHERE state.idea_id = v_idea_id
-  ) THEN
+  IF public.get_own_idea_classification_status(v_idea_id)->>'status'
+     <> 'missing' THEN
     RAISE EXCEPTION 'An incomplete idea was queued before backfill';
   END IF;
   PERFORM pg_catalog.set_config(
@@ -325,11 +360,8 @@ DECLARE
     pg_catalog.current_setting('test.phase7_incomplete_idea_id')::uuid;
 BEGIN
   IF public.backfill_phase7_classification_state() <> 0
-     OR EXISTS (
-       SELECT 1
-       FROM public.idea_classification_state AS state
-       WHERE state.idea_id = v_idea_id
-     ) THEN
+     OR public.get_own_idea_classification_status(v_idea_id)->>'status'
+       <> 'missing' THEN
     RAISE EXCEPTION 'The backfill queued an idea without confirmed Stage 2';
   END IF;
 END
@@ -457,6 +489,27 @@ END
 $phase7_classifier_test$;
 
 RESET ROLE;
+SET LOCAL ROLE authenticated;
+SELECT pg_catalog.set_config(
+  'request.jwt.claim.sub', 'a9940000-0000-4000-8000-000000000001', true
+);
+DO $phase7_retry_wait_projection_test$
+DECLARE
+  v_idea_id uuid := pg_catalog.current_setting('test.phase7_idea_id')::uuid;
+  v_projection jsonb;
+BEGIN
+  v_projection := public.get_own_idea_classification_status(v_idea_id);
+  IF v_projection->>'status' <> 'retry_wait'
+     OR (v_projection->>'wait_ms')::integer <= 0
+     OR v_projection ?| ARRAY[
+       'attempt_token', 'lease_expires_at', 'attempt_count', 'retry_after',
+       'last_failure_category', 'updated_at'
+     ] THEN
+    RAISE EXCEPTION 'Retry wait was not safely projected: %', v_projection;
+  END IF;
+END
+$phase7_retry_wait_projection_test$;
+RESET ROLE;
 DO $phase7_retry_backoff_test_setup$
 DECLARE
   v_idea_id uuid := pg_catalog.current_setting('test.phase7_idea_id')::uuid;
@@ -540,6 +593,24 @@ END
 $phase7_retry_claim_test$;
 RESET ROLE;
 
+SET LOCAL ROLE authenticated;
+SELECT pg_catalog.set_config(
+  'request.jwt.claim.sub', 'a9940000-0000-4000-8000-000000000001', true
+);
+DO $phase7_active_lease_projection_test$
+DECLARE
+  v_idea_id uuid := pg_catalog.current_setting('test.phase7_idea_id')::uuid;
+  v_projection jsonb;
+BEGIN
+  v_projection := public.get_own_idea_classification_status(v_idea_id);
+  IF v_projection->>'status' <> 'processing_active'
+     OR (v_projection->>'wait_ms')::integer <= 0 THEN
+    RAISE EXCEPTION 'Active lease was not safely projected: %', v_projection;
+  END IF;
+END
+$phase7_active_lease_projection_test$;
+RESET ROLE;
+
 DO $phase7_expired_lease_test_setup$
 DECLARE
   v_idea_id uuid := pg_catalog.current_setting('test.phase7_idea_id')::uuid;
@@ -550,6 +621,24 @@ BEGIN
     AND state.status = 'processing';
 END
 $phase7_expired_lease_test_setup$;
+
+SET LOCAL ROLE authenticated;
+SELECT pg_catalog.set_config(
+  'request.jwt.claim.sub', 'a9940000-0000-4000-8000-000000000001', true
+);
+DO $phase7_expired_lease_projection_test$
+DECLARE
+  v_idea_id uuid := pg_catalog.current_setting('test.phase7_idea_id')::uuid;
+  v_projection jsonb;
+BEGIN
+  v_projection := public.get_own_idea_classification_status(v_idea_id);
+  IF v_projection->>'status' <> 'processing_expired'
+     OR v_projection->>'wait_ms' IS NOT NULL THEN
+    RAISE EXCEPTION 'Expired lease was not safely projected: %', v_projection;
+  END IF;
+END
+$phase7_expired_lease_projection_test$;
+RESET ROLE;
 
 SET LOCAL ROLE service_role;
 DO $phase7_expired_lease_recovery_test$
@@ -741,11 +830,15 @@ DO $phase7_owner_read_test$
 DECLARE
   v_idea_id uuid := pg_catalog.current_setting('test.phase7_idea_id')::uuid;
   v_count integer;
+  v_projection jsonb;
 BEGIN
-  SELECT pg_catalog.count(*) INTO v_count
-  FROM public.idea_classification_state AS state
-  WHERE state.idea_id = v_idea_id AND state.status = 'current';
-  IF v_count <> 1 THEN
+  v_projection := public.get_own_idea_classification_status(v_idea_id);
+  IF v_projection->>'status' <> 'current'
+     OR (v_projection->>'current_classification_id') IS NULL
+     OR v_projection ?| ARRAY[
+       'attempt_token', 'lease_expires_at', 'attempt_count', 'retry_after',
+       'last_failure_category', 'updated_at'
+     ] THEN
     RAISE EXCEPTION 'The owner could not read current classification state';
   END IF;
   SELECT pg_catalog.count(*) INTO v_count
@@ -766,9 +859,12 @@ DECLARE
   v_count integer;
 BEGIN
   SELECT pg_catalog.count(*) INTO v_count
-  FROM public.idea_classification_state AS state
-  WHERE state.idea_id = v_idea_id;
-  IF v_count <> 0 THEN
+  FROM pg_catalog.jsonb_object_keys(
+    public.get_own_idea_classification_status(v_idea_id)
+  ) AS projection_key;
+  IF public.get_own_idea_classification_status(v_idea_id)->>'status'
+       <> 'not_found'
+     OR v_count <> 5 THEN
     RAISE EXCEPTION 'Another participant read classification state';
   END IF;
   SELECT pg_catalog.count(*) INTO v_count
@@ -800,11 +896,8 @@ BEGIN
     '[{"stage_number":3,"data":{"content":"An unrelated Stage 3 edit."}}]'::jsonb
   );
   IF v_result->>'outcome' <> 'applied'
-     OR (
-       SELECT state.status
-       FROM public.idea_classification_state AS state
-       WHERE state.idea_id = v_idea_id
-     ) <> 'current' THEN
+     OR public.get_own_idea_classification_status(v_idea_id)->>'status'
+       <> 'current' THEN
     RAISE EXCEPTION 'An unrelated Stage 3 edit changed classification state';
   END IF;
   v_revision := (v_result->>'result_revision')::integer;
@@ -814,11 +907,8 @@ BEGIN
     '[{"stage_number":1,"data":{"content":"A revised problem statement about reducing avoidable food waste."}}]'::jsonb
   );
   IF v_result->>'outcome' <> 'applied'
-     OR (
-       SELECT state.status
-       FROM public.idea_classification_state AS state
-       WHERE state.idea_id = v_idea_id
-     ) <> 'stale' THEN
+     OR public.get_own_idea_classification_status(v_idea_id)->>'status'
+       <> 'stale' THEN
     RAISE EXCEPTION 'A confirmed source edit failed to stale the current result';
   END IF;
   v_revision := (v_result->>'result_revision')::integer;
@@ -835,11 +925,8 @@ BEGIN
   END IF;
   v_result := public.confirm_idea_stage(v_idea_id, 1::smallint, v_revision);
   IF v_result->>'outcome' <> 'confirmed'
-     OR (
-       SELECT state.status
-       FROM public.idea_classification_state AS state
-       WHERE state.idea_id = v_idea_id
-     ) <> 'pending' THEN
+     OR public.get_own_idea_classification_status(v_idea_id)->>'status'
+       <> 'pending' THEN
     RAISE EXCEPTION 'Reconfirming Stage 1 did not queue a fresh classification';
   END IF;
 
@@ -948,11 +1035,8 @@ BEGIN
     '[{"stage_number":2,"data":{"content":"Revised capacities include shared storage and community cooking sessions."}}]'::jsonb
   );
   IF v_result->>'outcome' <> 'applied'
-     OR (
-       SELECT state.status
-       FROM public.idea_classification_state AS state
-       WHERE state.idea_id = v_idea_id
-     ) <> 'stale' THEN
+     OR public.get_own_idea_classification_status(v_idea_id)->>'status'
+       <> 'stale' THEN
     RAISE EXCEPTION 'A confirmed Stage 2 edit did not stale its classification';
   END IF;
   v_revision := (v_result->>'result_revision')::integer;
@@ -969,11 +1053,8 @@ BEGIN
   END IF;
   v_result := public.confirm_idea_stage(v_idea_id, 2::smallint, v_revision);
   IF v_result->>'outcome' <> 'confirmed'
-     OR (
-       SELECT state.status
-       FROM public.idea_classification_state AS state
-       WHERE state.idea_id = v_idea_id
-     ) <> 'pending' THEN
+     OR public.get_own_idea_classification_status(v_idea_id)->>'status'
+       <> 'pending' THEN
     RAISE EXCEPTION 'Reconfirming Stage 2 did not queue a fresh classification';
   END IF;
 
@@ -1007,5 +1088,273 @@ BEGIN
   END IF;
 END
 $phase7_stage2_snapshot_assertion$;
+
+DO $phase7_lease_expiry_finalization_test$
+DECLARE
+  v_idea_id uuid := pg_catalog.current_setting('test.phase7_idea_id')::uuid;
+  v_owner_id uuid := 'a9940000-0000-4000-8000-000000000001';
+  v_stage_1 uuid :=
+    pg_catalog.current_setting('test.phase7_source_1_new')::uuid;
+  v_stage_2 uuid :=
+    pg_catalog.current_setting('test.phase7_source_2_new')::uuid;
+  v_attempt_a uuid := 'a9980000-0000-4000-8000-000000000011';
+  v_attempt_b uuid := 'a9980000-0000-4000-8000-000000000012';
+  v_attempt_c uuid := 'a9980000-0000-4000-8000-000000000013';
+  v_attempt_d uuid := 'a9980000-0000-4000-8000-000000000014';
+  v_attempt_e uuid := 'a9980000-0000-4000-8000-000000000015';
+  v_result jsonb;
+  v_before_count integer;
+  v_after_count integer;
+  v_lease timestamptz;
+  v_boundary timestamptz;
+  v_attempt_count smallint;
+  v_state public.idea_classification_state%ROWTYPE;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_proc AS function_row
+    WHERE function_row.oid =
+      'public.complete_idea_classification(uuid,uuid,text,text,text[],integer,integer[],jsonb,numeric,text,text,uuid,uuid)'::pg_catalog.regprocedure
+      AND function_row.proowner =
+        'javaneh_identity_executor'::pg_catalog.regrole
+      AND function_row.prosecdef
+      AND function_row.proconfig = ARRAY['search_path=pg_catalog']
+      AND pg_catalog.has_function_privilege(
+        'service_role', function_row.oid, 'EXECUTE'
+      )
+      AND NOT pg_catalog.has_function_privilege(
+        'authenticated', function_row.oid, 'EXECUTE'
+      )
+  ) OR NOT EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_proc AS function_row
+    WHERE function_row.oid =
+      'public.fail_idea_classification(uuid,uuid,text)'::pg_catalog.regprocedure
+      AND function_row.proowner =
+        'javaneh_identity_executor'::pg_catalog.regrole
+      AND function_row.prosecdef
+      AND function_row.proconfig = ARRAY['search_path=pg_catalog']
+      AND pg_catalog.has_function_privilege(
+        'service_role', function_row.oid, 'EXECUTE'
+      )
+      AND NOT pg_catalog.has_function_privilege(
+        'authenticated', function_row.oid, 'EXECUTE'
+      )
+  ) OR pg_catalog.has_function_privilege(
+    'service_role',
+    'public.complete_idea_classification_without_lease_guard(uuid,uuid,text,text,text[],integer,integer[],jsonb,numeric,text,text,uuid,uuid)',
+    'EXECUTE'
+  ) OR pg_catalog.has_function_privilege(
+    'service_role',
+    'public.fail_idea_classification_without_lease_guard(uuid,uuid,text)',
+    'EXECUTE'
+  ) THEN
+    RAISE EXCEPTION
+      'Lease-guarded RPC ownership, security settings, or grants are invalid';
+  END IF;
+
+  v_result := public.claim_idea_classification(
+    v_idea_id, v_owner_id, v_stage_1, v_stage_2,
+    'phase7.v1', 'phase7.classification.v1', v_attempt_a
+  );
+  IF v_result->>'outcome' <> 'claimed' THEN
+    RAISE EXCEPTION 'Lease-expiry completion fixture claim failed: %', v_result;
+  END IF;
+
+  SELECT pg_catalog.count(*) INTO v_before_count
+  FROM public.idea_classification_results AS result
+  WHERE result.idea_id = v_idea_id;
+  UPDATE public.idea_classification_state AS state
+  SET lease_expires_at = '2000-01-01 00:00:00+00'::timestamptz
+  WHERE state.idea_id = v_idea_id;
+  SELECT state.lease_expires_at INTO v_lease
+  FROM public.idea_classification_state AS state
+  WHERE state.idea_id = v_idea_id;
+  SELECT state.attempt_count INTO v_attempt_count
+  FROM public.idea_classification_state AS state
+  WHERE state.idea_id = v_idea_id;
+
+  v_result := public.complete_idea_classification(
+    v_idea_id, v_attempt_a, 'phase7.v1', 'social_resilience',
+    ARRAY['resource_efficiency', 'economic_mutual_aid'],
+    55, ARRAY[30, 15],
+    '{"social_resilience":"A valid primary rationale.","resource_efficiency":"A valid secondary rationale.","economic_mutual_aid":"Another valid secondary rationale."}'::jsonb,
+    NULL, 'test/model', 'phase7.classification.v1', v_stage_1, v_stage_2
+  );
+  IF v_result->>'outcome' <> 'stale_attempt' THEN
+    RAISE EXCEPTION 'Completion after lease expiry was not rejected: %',
+      v_result;
+  END IF;
+  SELECT state.* INTO v_state
+  FROM public.idea_classification_state AS state
+  WHERE state.idea_id = v_idea_id;
+  SELECT pg_catalog.count(*) INTO v_after_count
+  FROM public.idea_classification_results AS result
+  WHERE result.idea_id = v_idea_id;
+  IF v_state.status <> 'processing'
+     OR v_state.attempt_token IS DISTINCT FROM v_attempt_a
+     OR v_state.lease_expires_at IS DISTINCT FROM v_lease
+     OR v_state.attempt_count IS DISTINCT FROM v_attempt_count
+     OR v_after_count <> v_before_count THEN
+    RAISE EXCEPTION
+      'Expired completion changed state, lease metadata, or result history';
+  END IF;
+
+  v_result := public.claim_idea_classification(
+    v_idea_id, v_owner_id, v_stage_1, v_stage_2,
+    'phase7.v1', 'phase7.classification.v1', v_attempt_b
+  );
+  IF v_result->>'outcome' <> 'claimed' THEN
+    RAISE EXCEPTION 'Expired completion left work unrecoverable: %', v_result;
+  END IF;
+  SELECT state.* INTO v_state
+  FROM public.idea_classification_state AS state
+  WHERE state.idea_id = v_idea_id;
+  v_lease := v_state.lease_expires_at;
+
+  v_result := public.complete_idea_classification(
+    v_idea_id, v_attempt_a, 'phase7.v1', 'social_resilience',
+    ARRAY['resource_efficiency', 'economic_mutual_aid'],
+    55, ARRAY[30, 15],
+    '{"social_resilience":"A valid primary rationale.","resource_efficiency":"A valid secondary rationale.","economic_mutual_aid":"Another valid secondary rationale."}'::jsonb,
+    NULL, 'test/model', 'phase7.classification.v1', v_stage_1, v_stage_2
+  );
+  IF v_result->>'outcome' <> 'stale_attempt' THEN
+    RAISE EXCEPTION 'A reclaimed attempt accepted stale completion: %',
+      v_result;
+  END IF;
+  v_result := public.fail_idea_classification(
+    v_idea_id, v_attempt_a, 'timeout'
+  );
+  IF v_result->>'outcome' <> 'stale_attempt' THEN
+    RAISE EXCEPTION 'A reclaimed attempt accepted stale failure: %', v_result;
+  END IF;
+  SELECT state.* INTO v_state
+  FROM public.idea_classification_state AS state
+  WHERE state.idea_id = v_idea_id;
+  IF v_state.status <> 'processing'
+     OR v_state.attempt_token IS DISTINCT FROM v_attempt_b
+     OR v_state.lease_expires_at IS DISTINCT FROM v_lease THEN
+    RAISE EXCEPTION 'A stale worker altered the reclaimed attempt';
+  END IF;
+
+  UPDATE public.idea_classification_state AS state
+  SET lease_expires_at = '2000-01-01 00:00:00+00'::timestamptz
+  WHERE state.idea_id = v_idea_id;
+  SELECT state.lease_expires_at INTO v_lease
+  FROM public.idea_classification_state AS state
+  WHERE state.idea_id = v_idea_id;
+  SELECT state.attempt_count INTO v_attempt_count
+  FROM public.idea_classification_state AS state
+  WHERE state.idea_id = v_idea_id;
+  v_result := public.fail_idea_classification(
+    v_idea_id, v_attempt_b, 'timeout'
+  );
+  IF v_result->>'outcome' <> 'stale_attempt' THEN
+    RAISE EXCEPTION 'Failure after lease expiry was not rejected: %',
+      v_result;
+  END IF;
+  SELECT state.* INTO v_state
+  FROM public.idea_classification_state AS state
+  WHERE state.idea_id = v_idea_id;
+  IF v_state.status <> 'processing'
+     OR v_state.attempt_token IS DISTINCT FROM v_attempt_b
+     OR v_state.lease_expires_at IS DISTINCT FROM v_lease
+     OR v_state.attempt_count IS DISTINCT FROM v_attempt_count
+     OR v_state.retry_after IS NOT NULL
+     OR v_state.last_failure_category IS NOT NULL THEN
+    RAISE EXCEPTION 'Expired failure mutated processing state or retry data';
+  END IF;
+
+  v_result := public.claim_idea_classification(
+    v_idea_id, v_owner_id, v_stage_1, v_stage_2,
+    'phase7.v1', 'phase7.classification.v1', v_attempt_c
+  );
+  IF v_result->>'outcome' <> 'claimed' THEN
+    RAISE EXCEPTION 'Expired failure left work unrecoverable: %', v_result;
+  END IF;
+  v_result := public.fail_idea_classification(
+    v_idea_id, v_attempt_c, 'timeout'
+  );
+  IF v_result->>'outcome' <> 'failed' THEN
+    RAISE EXCEPTION 'A valid worker failure was rejected: %', v_result;
+  END IF;
+
+  UPDATE public.idea_classification_state AS state
+  SET status = 'pending',
+      current_classification_id = NULL,
+      attempt_token = NULL,
+      lease_expires_at = NULL,
+      retry_after = NULL,
+      attempt_count = 0,
+      last_failure_category = NULL
+  WHERE state.idea_id = v_idea_id;
+
+  v_result := public.claim_idea_classification(
+    v_idea_id, v_owner_id, v_stage_1, v_stage_2,
+    'phase7.v1', 'phase7.classification.v1', v_attempt_d
+  );
+  IF v_result->>'outcome' <> 'claimed' THEN
+    RAISE EXCEPTION 'Lease-boundary fixture claim failed: %', v_result;
+  END IF;
+  v_boundary := pg_catalog.clock_timestamp();
+  UPDATE public.idea_classification_state AS state
+  SET lease_expires_at = v_boundary
+  WHERE state.idea_id = v_idea_id;
+  SELECT pg_catalog.count(*) INTO v_before_count
+  FROM public.idea_classification_results AS result
+  WHERE result.idea_id = v_idea_id;
+
+  v_result := public.complete_idea_classification(
+    v_idea_id, v_attempt_d, 'phase7.v1', 'social_resilience',
+    ARRAY['resource_efficiency', 'economic_mutual_aid'],
+    55, ARRAY[30, 15],
+    '{"social_resilience":"A valid primary rationale.","resource_efficiency":"A valid secondary rationale.","economic_mutual_aid":"Another valid secondary rationale."}'::jsonb,
+    NULL, 'test/model', 'phase7.classification.v1', v_stage_1, v_stage_2
+  );
+  IF v_result->>'outcome' <> 'stale_attempt' THEN
+    RAISE EXCEPTION 'Completion at the lease boundary was accepted: %',
+      v_result;
+  END IF;
+  v_result := public.fail_idea_classification(
+    v_idea_id, v_attempt_d, 'timeout'
+  );
+  IF v_result->>'outcome' <> 'stale_attempt' THEN
+    RAISE EXCEPTION 'Failure at the lease boundary was accepted: %', v_result;
+  END IF;
+  SELECT state.* INTO v_state
+  FROM public.idea_classification_state AS state
+  WHERE state.idea_id = v_idea_id;
+  SELECT pg_catalog.count(*) INTO v_after_count
+  FROM public.idea_classification_results AS result
+  WHERE result.idea_id = v_idea_id;
+  IF v_state.status <> 'processing'
+     OR v_state.attempt_token IS DISTINCT FROM v_attempt_d
+     OR v_state.lease_expires_at > pg_catalog.clock_timestamp()
+     OR v_after_count <> v_before_count THEN
+    RAISE EXCEPTION 'Lease-boundary rejection mutated work or inserted a result';
+  END IF;
+
+  v_result := public.claim_idea_classification(
+    v_idea_id, v_owner_id, v_stage_1, v_stage_2,
+    'phase7.v1', 'phase7.classification.v1', v_attempt_e
+  );
+  IF v_result->>'outcome' <> 'claimed' THEN
+    RAISE EXCEPTION 'Boundary-expired work could not be reclaimed: %',
+      v_result;
+  END IF;
+  v_result := public.complete_idea_classification(
+    v_idea_id, v_attempt_e, 'phase7.v1', 'social_resilience',
+    ARRAY['resource_efficiency', 'economic_mutual_aid'],
+    55, ARRAY[30, 15],
+    '{"social_resilience":"A valid primary rationale.","resource_efficiency":"A valid secondary rationale.","economic_mutual_aid":"Another valid secondary rationale."}'::jsonb,
+    NULL, 'test/model', 'phase7.classification.v1', v_stage_1, v_stage_2
+  );
+  IF v_result->>'outcome' <> 'completed' THEN
+    RAISE EXCEPTION 'A valid non-expired lease could not complete: %',
+      v_result;
+  END IF;
+END
+$phase7_lease_expiry_finalization_test$;
 
 ROLLBACK;

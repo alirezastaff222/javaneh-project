@@ -312,6 +312,7 @@ export async function classifyIdea(
     throw new ClassificationServiceError("persistence_unavailable");
   } catch (error) {
     const category = classificationFailureCategory(error);
+    let obsoleteAttempt = false;
     if (admission && !circuitRecordAttempted) {
       circuitRecordAttempted = true;
       try {
@@ -348,11 +349,12 @@ export async function classifyIdea(
 
     if (claimed) {
       try {
-        await dependencies.persistence.fail({
+        const failure = await dependencies.persistence.fail({
           ideaId: source.ideaId,
           attemptToken,
           category,
         });
+        obsoleteAttempt = failure.outcome === "stale_attempt";
       } catch {
         console.error(
           JSON.stringify({
@@ -372,6 +374,7 @@ export async function classifyIdea(
         errorCategory: category,
       }),
     );
+    if (obsoleteAttempt) return "stale";
     return "failed";
   }
 }

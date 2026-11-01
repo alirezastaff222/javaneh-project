@@ -7,7 +7,10 @@ import {
 } from "./classification-contracts";
 import {
   ClassificationDispatchGate,
+  ClassificationRetryTimerRegistry,
   getClassificationDispatchDecision,
+  isRetryableClassificationHttpStatus,
+  shouldRetryClassificationHttpRequest,
   shouldDispatchAfterConfirmation,
 } from "./classification-dispatch";
 import {
@@ -47,46 +50,37 @@ test("pending state dispatches on initial panel load", () => {
     getClassificationDispatchDecision(
       {
         status: "pending",
-        attempt_count: 0,
-        last_failure_category: null,
-        retry_after: null,
-        lease_expires_at: null,
+        wait_ms: null,
+        source_stage_1_revision_id: source.stage1.revisionId,
+        source_stage_2_revision_id: source.stage2.revisionId,
       },
-      Date.now(),
     ),
     { kind: "dispatch" },
   );
 });
 
 test("current, active processing, and permanent failures do not dispatch", () => {
-  const now = Date.now();
   for (const state of [
     {
       status: "current" as const,
-      attempt_count: 0,
-      last_failure_category: null,
-      retry_after: null,
-      lease_expires_at: null,
+      wait_ms: null,
+      source_stage_1_revision_id: source.stage1.revisionId,
+      source_stage_2_revision_id: source.stage2.revisionId,
     },
     {
-      status: "processing" as const,
-      attempt_count: 1,
-      last_failure_category: null,
-      retry_after: null,
-      lease_expires_at: new Date(now + 60_000).toISOString(),
+      status: "processing_active" as const,
+      wait_ms: 60_000,
+      source_stage_1_revision_id: source.stage1.revisionId,
+      source_stage_2_revision_id: source.stage2.revisionId,
     },
     {
       status: "failed" as const,
-      attempt_count: 1,
-      last_failure_category: "not_configured",
-      retry_after: null,
-      lease_expires_at: null,
+      wait_ms: null,
+      source_stage_1_revision_id: source.stage1.revisionId,
+      source_stage_2_revision_id: source.stage2.revisionId,
     },
   ]) {
-    assert.notEqual(
-      getClassificationDispatchDecision(state, now).kind,
-      "dispatch",
-    );
+    assert.notEqual(getClassificationDispatchDecision(state).kind, "dispatch");
   }
 });
 
@@ -141,55 +135,159 @@ test("only qualifying Stage 1/2 confirmations dispatch classification", () => {
   );
 });
 
-test("retryable failures wait for the bounded retry time and exhausted failures stop", () => {
-  const now = Date.now();
+test("the server projection controls retry waits and ready retries", () => {
   const retryState = {
-    status: "failed" as const,
-    attempt_count: 1,
-    last_failure_category: "timeout",
-    retry_after: new Date(now + 30_000).toISOString(),
-    lease_expires_at: null,
+    status: "retry_wait" as const,
+    wait_ms: 30_000,
+    source_stage_1_revision_id: source.stage1.revisionId,
+    source_stage_2_revision_id: source.stage2.revisionId,
   };
   assert.deepEqual(
-    getClassificationDispatchDecision(retryState, now),
+    getClassificationDispatchDecision(retryState),
     { kind: "wait", delayMs: 30_000 },
   );
   assert.deepEqual(
-    getClassificationDispatchDecision(retryState, now + 31_000),
+    getClassificationDispatchDecision({
+      ...retryState,
+      status: "retry_ready",
+      wait_ms: null,
+    }),
     { kind: "dispatch" },
   );
   assert.deepEqual(
-    getClassificationDispatchDecision(
-      { ...retryState, attempt_count: 3 },
-      now + 31_000,
-    ),
+    getClassificationDispatchDecision({ ...retryState, status: "failed" }),
     { kind: "none" },
   );
 });
 
+test("only retryable HTTP statuses schedule another classification request", () => {
+  for (const status of [408, 429, 500, 503, 599]) {
+    assert.equal(isRetryableClassificationHttpStatus(status), true);
+  }
+  for (const status of [200, 400, 401, 404, 499, 600]) {
+    assert.equal(isRetryableClassificationHttpStatus(status), false);
+  }
+  assert.equal(shouldRetryClassificationHttpRequest(1), true);
+  assert.equal(shouldRetryClassificationHttpRequest(2), true);
+  assert.equal(shouldRetryClassificationHttpRequest(3), true);
+  assert.equal(shouldRetryClassificationHttpRequest(4), false);
+  assert.equal(shouldRetryClassificationHttpRequest(0), false);
+});
+
 test("expired processing lease is redispatched but an active lease is not", () => {
-  const now = Date.now();
-  const processingState = {
-    status: "processing" as const,
-    attempt_count: 1,
-    last_failure_category: null,
-    retry_after: null,
-    lease_expires_at: new Date(now - 1).toISOString(),
-  };
   assert.deepEqual(
-    getClassificationDispatchDecision(processingState, now),
+    getClassificationDispatchDecision({
+      status: "processing_expired",
+      wait_ms: null,
+      source_stage_1_revision_id: source.stage1.revisionId,
+      source_stage_2_revision_id: source.stage2.revisionId,
+    }),
     { kind: "dispatch" },
   );
   assert.deepEqual(
     getClassificationDispatchDecision(
       {
-        ...processingState,
-        lease_expires_at: new Date(now + 1_000).toISOString(),
+        status: "processing_active",
+        wait_ms: 1_250,
+        source_stage_1_revision_id: source.stage1.revisionId,
+        source_stage_2_revision_id: source.stage2.revisionId,
       },
-      now,
     ),
     { kind: "wait", delayMs: 1_250 },
   );
+});
+
+test("network retry timers are unique per dispatch key and canceled on source changes", () => {
+  const timers = new ClassificationRetryTimerRegistry();
+  const dispatchGate = new ClassificationDispatchGate();
+  const callbacks = new Map<number, () => void>();
+  const cleared = new Set<number>();
+  let nextTimerId = 0;
+  const scheduler = {
+    setTimeout(callback: () => void): number {
+      const timerId = ++nextTimerId;
+      callbacks.set(timerId, callback);
+      return timerId;
+    },
+    clearTimeout(timerId: number): void {
+      cleared.add(timerId);
+      callbacks.delete(timerId);
+    },
+  };
+  let oldRevisionReloads = 0;
+  let newRevisionReloads = 0;
+
+  timers.setSourceKey("idea:source-a", scheduler);
+  assert.equal(
+    timers.schedule(
+      "source-a:pending",
+      "idea:source-a",
+      30_000,
+      () => oldRevisionReloads++,
+      scheduler,
+    ),
+    true,
+  );
+  assert.equal(
+    timers.schedule(
+      "source-a:pending",
+      "idea:source-a",
+      30_000,
+      () => oldRevisionReloads++,
+      scheduler,
+    ),
+    false,
+  );
+  const oldTimerCallback = callbacks.get(1);
+  assert.equal(timers.setSourceKey("idea:source-b", scheduler), true);
+  assert.equal(cleared.has(1), true);
+  oldTimerCallback?.();
+  assert.equal(oldRevisionReloads, 0);
+
+  assert.equal(
+    timers.schedule(
+      "source-b:pending",
+      "idea:source-b",
+      30_000,
+      () => {
+        newRevisionReloads++;
+        assert.equal(dispatchGate.begin("idea:source-b:pending"), true);
+      },
+      scheduler,
+    ),
+    true,
+  );
+  callbacks.get(2)?.();
+  assert.equal(newRevisionReloads, 1);
+});
+
+test("unmount cleanup cancels active revision retry timers", () => {
+  const timers = new ClassificationRetryTimerRegistry();
+  const callbacks = new Map<number, () => void>();
+  const cleared = new Set<number>();
+  let nextTimerId = 0;
+  const scheduler = {
+    setTimeout(callback: () => void): number {
+      const timerId = ++nextTimerId;
+      callbacks.set(timerId, callback);
+      return timerId;
+    },
+    clearTimeout(timerId: number): void {
+      cleared.add(timerId);
+      callbacks.delete(timerId);
+    },
+  };
+  let reloads = 0;
+  timers.setSourceKey("idea:source-a", scheduler);
+  timers.schedule("first", "idea:source-a", 30_000, () => reloads++, scheduler);
+  timers.schedule("second", "idea:source-a", 30_000, () => reloads++, scheduler);
+  const scheduledCallbacks = [...callbacks.values()];
+
+  timers.clearAll(scheduler);
+  for (const callback of scheduledCallbacks) callback();
+
+  assert.deepEqual([...cleared], [1, 2]);
+  assert.equal(reloads, 0);
 });
 
 function output(
@@ -414,6 +512,38 @@ test("provider outages are bounded, persisted as retryable failures, and use the
   assert.equal(calls, 2);
   assert.equal(failureCategory, "unavailable");
   assert.equal(recordedFailure, true);
+});
+
+test("an expired worker failure is surfaced as an obsolete attempt", async () => {
+  const persistence: ClassificationPersistence = {
+    claim: async ({ attemptToken }) => ({
+      outcome: "claimed",
+      attempt_token: attemptToken,
+    }),
+    complete: async () => ({
+      outcome: "completed",
+      classification_id: "a9980000-0000-4000-8000-000000000001",
+    }),
+    fail: async () => ({ outcome: "stale_attempt" }),
+  };
+  const circuit: MentorCircuitBreaker = {
+    status: async () => ({ state: "closed", recoveryEligible: false }),
+    admit: async () => ({ outcome: "admitted", state: "closed" }),
+    record: async () => undefined,
+  };
+
+  const status = await classifyIdea(source, {
+    persistence,
+    circuit,
+    provider: {
+      generate: async () => {
+        throw new MentorProviderError("unavailable", true);
+      },
+    },
+    sleep: async () => undefined,
+  });
+
+  assert.equal(status, "stale");
 });
 
 test("an active logical classification is not sent to the provider again", async () => {

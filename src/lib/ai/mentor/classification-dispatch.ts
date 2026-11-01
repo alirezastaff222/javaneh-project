@@ -1,21 +1,16 @@
-export const classificationRetryableFailureCategories = [
-  "circuit_open",
-  "circuit_control_unavailable",
-  "timeout",
-  "network",
-  "rate_limited",
-  "unavailable",
-  "persistence_unavailable",
-] as const;
-
 export type ClassificationDispatchState = {
-  status: "pending" | "processing" | "current" | "stale" | "failed";
-  attempt_count: number;
-  last_failure_category: string | null;
-  retry_after: string | null;
-  lease_expires_at: string | null;
-  source_stage_1_revision_id?: string;
-  source_stage_2_revision_id?: string;
+  status:
+    | "pending"
+    | "processing_active"
+    | "processing_expired"
+    | "current"
+    | "stale"
+    | "retry_wait"
+    | "retry_ready"
+    | "failed";
+  wait_ms: number | null;
+  source_stage_1_revision_id: string;
+  source_stage_2_revision_id: string;
 };
 
 export type ClassificationDispatchDecision =
@@ -23,47 +18,90 @@ export type ClassificationDispatchDecision =
   | { kind: "wait"; delayMs: number }
   | { kind: "none" };
 
-const classificationMaxAttempts = 3;
-const retryableCategorySet: ReadonlySet<string> = new Set(
-  classificationRetryableFailureCategories,
-);
+export type ClassificationRetryTimerScheduler = {
+  setTimeout(callback: () => void, delayMs: number): number;
+  clearTimeout(timerId: number): void;
+};
 
-export function isClassificationRetryableFailureCategory(
-  category: string | null,
+export function isRetryableClassificationHttpStatus(status: number): boolean {
+  return status === 408 || status === 429 || (status >= 500 && status <= 599);
+}
+
+export function shouldRetryClassificationHttpRequest(
+  retryCount: number,
 ): boolean {
-  return category !== null && retryableCategorySet.has(category);
+  return Number.isInteger(retryCount) && retryCount >= 1 && retryCount <= 3;
 }
 
 export function getClassificationDispatchDecision(
   state: ClassificationDispatchState,
-  now: number,
 ): ClassificationDispatchDecision {
-  if (state.status === "pending") return { kind: "dispatch" };
-
-  if (state.status === "processing" && state.lease_expires_at) {
-    const leaseExpiresAt = Date.parse(state.lease_expires_at);
-    if (!Number.isFinite(leaseExpiresAt)) return { kind: "none" };
-    if (leaseExpiresAt > now) {
-      return { kind: "wait", delayMs: leaseExpiresAt - now + 250 };
-    }
+  if (
+    state.status === "pending" ||
+    state.status === "processing_expired" ||
+    state.status === "retry_ready"
+  ) {
     return { kind: "dispatch" };
   }
 
   if (
-    state.status === "failed" &&
-    state.attempt_count < classificationMaxAttempts &&
-    isClassificationRetryableFailureCategory(state.last_failure_category) &&
-    state.retry_after
+    (state.status === "processing_active" || state.status === "retry_wait") &&
+    state.wait_ms !== null &&
+    Number.isInteger(state.wait_ms) &&
+    state.wait_ms > 0
   ) {
-    const retryAfter = Date.parse(state.retry_after);
-    if (!Number.isFinite(retryAfter)) return { kind: "none" };
-    if (retryAfter > now) {
-      return { kind: "wait", delayMs: retryAfter - now };
-    }
-    return { kind: "dispatch" };
+    return { kind: "wait", delayMs: state.wait_ms };
   }
 
   return { kind: "none" };
+}
+
+export class ClassificationRetryTimerRegistry {
+  private readonly timers = new Map<
+    string,
+    { sourceKey: string; timerId: number }
+  >();
+  private sourceKey: string | null = null;
+
+  setSourceKey(
+    sourceKey: string,
+    scheduler: ClassificationRetryTimerScheduler,
+  ): boolean {
+    if (this.sourceKey === sourceKey) return false;
+    this.sourceKey = sourceKey;
+    for (const [key, timer] of this.timers) {
+      if (timer.sourceKey !== sourceKey) {
+        scheduler.clearTimeout(timer.timerId);
+        this.timers.delete(key);
+      }
+    }
+    return true;
+  }
+
+  schedule(
+    key: string,
+    sourceKey: string,
+    delayMs: number,
+    callback: () => void,
+    scheduler: ClassificationRetryTimerScheduler,
+  ): boolean {
+    if (this.sourceKey !== sourceKey || this.timers.has(key)) return false;
+    const timerId = scheduler.setTimeout(() => {
+      const timer = this.timers.get(key);
+      if (!timer || timer.timerId !== timerId) return;
+      this.timers.delete(key);
+      if (this.sourceKey === sourceKey) callback();
+    }, delayMs);
+    this.timers.set(key, { sourceKey, timerId });
+    return true;
+  }
+
+  clearAll(scheduler: ClassificationRetryTimerScheduler): void {
+    for (const timer of this.timers.values()) {
+      scheduler.clearTimeout(timer.timerId);
+    }
+    this.timers.clear();
+  }
 }
 
 export function shouldDispatchAfterConfirmation(input: {
