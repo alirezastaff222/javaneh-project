@@ -40,6 +40,12 @@ export type IdeaNextAction =
   | "revise"
   | "continue";
 
+export type PublishedFeedback = {
+  content: string;
+  version_number: number;
+  published_at: string;
+};
+
 export type IdeaPortfolioItem = {
   id: string;
   status: IdeaStatus;
@@ -52,6 +58,7 @@ export type IdeaPortfolioItem = {
   currentStageStatus: StageStatus;
   nextAction: IdeaNextAction;
   evaluationStatus?: HumanEvaluationStatus;
+  publishedFeedback?: PublishedFeedback;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -80,6 +87,16 @@ function isHumanEvaluationStatus(
     value === "awaiting_review" ||
     value === "in_progress" ||
     value === "completed"
+  );
+}
+
+function isPublishedFeedback(value: unknown): value is PublishedFeedback {
+  return (
+    isRecord(value) &&
+    typeof value.content === "string" &&
+    Number.isInteger(value.version_number) &&
+    Number(value.version_number) > 0 &&
+    typeof value.published_at === "string"
   );
 }
 
@@ -202,6 +219,8 @@ export function isIdeaPortfolioItem(value: unknown): value is IdeaPortfolioItem 
     (value.evaluationStatus === undefined ||
       (value.status === "submitted" &&
         isHumanEvaluationStatus(value.evaluationStatus))) &&
+    (value.publishedFeedback === undefined ||
+      (value.status === "submitted" && isPublishedFeedback(value.publishedFeedback))) &&
     [
       "awaiting_review",
       "submit",

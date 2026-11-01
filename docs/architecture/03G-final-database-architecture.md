@@ -36,10 +36,14 @@ lifecycle transitions, or competitive scoring.
 
 Do not add these in the initial package: - `idea_sessions` or a separate
 session-only draft system; - AI mentor conversations/messages; -
-official gamification points ledger or milestone scoring; -
-groups/collaboration membership; - taxonomy tables or activation of the
-six thematic axes; - evaluator/reviewer workflow; - final dossier
-storage and 168-hour dossier revision snapshots; - Storage buckets or
+official gamification points ledger or milestone scoring; - group
+accounts, group-owned ideas, group membership, representatives,
+invitations, or group-level permissions. These are permanently outside
+the supported product scope; every idea has exactly one individual
+authenticated account owner, while real-world collaboration outside the
+platform remains permitted; - taxonomy tables or activation of the six
+thematic axes; - evaluator/reviewer workflow; - final dossier storage
+and 168-hour dossier revision snapshots; - Storage buckets or
 asynchronous storage-cleanup workers; - appeals, ranking, tie-breaking,
 or competition administration; - new product statuses or submission
 workflows not approved separately.

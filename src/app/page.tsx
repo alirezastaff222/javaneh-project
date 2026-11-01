@@ -17,6 +17,18 @@ export default function Home() {
         >
           ثبت و توسعه ایده
         </Link>
+        <Link
+          href="/evaluator"
+          className="inline-flex min-h-11 items-center rounded-lg border border-foreground/20 px-4 font-medium transition-colors hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-offset-2"
+        >
+          ارزیابی ایده‌های اختصاصی
+        </Link>
+        <Link
+          href="/feedback/publisher"
+          className="inline-flex min-h-11 items-center rounded-lg border border-foreground/20 px-4 font-medium transition-colors hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-offset-2"
+        >
+          انتشار بازخورد ارزیابی
+        </Link>
       </div>
     </main>
   );

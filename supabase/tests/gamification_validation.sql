@@ -126,11 +126,13 @@ BEGIN
 
   INSERT INTO public.competitions (
     competition_key, name, description, status,
-    scoring_configuration_version_id
+    scoring_configuration_version_id, entry_opens_at, entry_closes_at
   )
   VALUES (
     'm9r4-validation-test', 'M9R4 Test Competition',
-    'Rollback-only active fixture.', 'active', v_version_id
+    'Rollback-only active fixture.', 'active', v_version_id,
+    pg_catalog.clock_timestamp() - interval '1 hour',
+    pg_catalog.clock_timestamp() + interval '1 day'
   )
   RETURNING id INTO v_competition_id;
 

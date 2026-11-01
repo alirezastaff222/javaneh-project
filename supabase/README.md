@@ -82,6 +82,18 @@ draft. M9R6 records the approved guide and M9R7 records the approved Stage 4
 Qualitative decision without changing lifecycle status. Run the suite as
 `supabase_admin` against the same isolated local or dedicated test database.
 
+The competition lifecycle and entry-window migration is
+`migrations/20261101280000_javaneh_competition_lifecycle_scheduling.sql`;
+its rollback-only suite is `tests/competition_lifecycle_scheduling.sql`.
+Competitions use the `draft → active → closed → archived` lifecycle, while the
+existing `active → retired` transition remains available for compatibility.
+Entry opening is inclusive and closing is exclusive, based on database time.
+The existing scoring version, competition identity, milestone catalog, and
+evaluation levels remain authoritative and protected after activation. No
+schedule dates or policy choices are seeded. Run the suite as
+`supabase_admin` against an isolated database after applying the migration
+chain.
+
 The M9R5 scoring migration is
 `migrations/20261101060000_javaneh_authoritative_scoring.sql`; its rollback-only
 suite is `tests/gamification_scoring.sql`. It extends the existing ledger and

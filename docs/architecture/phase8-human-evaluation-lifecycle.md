@@ -64,8 +64,10 @@ separate and unchanged.
 ## Deferred work
 
 Feedback drafting/publication and participant feedback display belong to
-Package 7B. Jury criteria, scores, ranking, selection, and final competition
-results belong to Phase 10. Notifications are not part of this package.
+Package 7B, which is documented in
+`docs/architecture/phase8-human-evaluation-feedback-publication.md`.
+Jury criteria, scores, ranking, selection, and final competition results
+belong to Phase 10. Notifications are not part of this package.
 
 The rollback-only test suite is
 `supabase/tests/human_evaluation_lifecycle.sql`. Run it as `supabase_admin`

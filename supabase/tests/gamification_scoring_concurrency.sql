@@ -83,11 +83,13 @@ BEGIN
     WHERE id = v_version_id;
   INSERT INTO public.competitions (
     competition_key, name, description, status,
-    scoring_configuration_version_id
+    scoring_configuration_version_id, entry_opens_at, entry_closes_at
   )
   VALUES (
     'm9r5-concurrent-test', 'M9R5 Concurrent Test',
-    'Disposable concurrent award fixture.', 'active', v_version_id
+    'Disposable concurrent award fixture.', 'active', v_version_id,
+    pg_catalog.clock_timestamp() - interval '1 hour',
+    pg_catalog.clock_timestamp() + interval '1 day'
   );
 END
 $seed_concurrent_scoring$;

@@ -64,6 +64,19 @@ BEGIN
      )
      OR NOT pg_catalog.has_function_privilege(
        'authenticated', 'public.get_own_idea_evaluation_status(uuid)', 'EXECUTE'
+     )
+     OR pg_catalog.has_function_privilege(
+       'anon', 'public.get_assigned_idea_evaluation_dossier(uuid)', 'EXECUTE'
+     )
+     OR pg_catalog.has_function_privilege(
+       'service_role',
+       'public.get_assigned_idea_evaluation_dossier(uuid)',
+       'EXECUTE'
+     )
+     OR NOT pg_catalog.has_function_privilege(
+       'authenticated',
+       'public.get_assigned_idea_evaluation_dossier(uuid)',
+       'EXECUTE'
      ) THEN
     RAISE EXCEPTION 'Evaluation RPC execution grants are unsafe';
   END IF;
@@ -78,6 +91,18 @@ BEGIN
      OR NOT ('search_path=pg_catalog' = ANY(v_function.proconfig))
      OR v_function.owner_name <> 'javaneh_identity_executor' THEN
     RAISE EXCEPTION 'Evaluation RPC owner, search path, or security definer is unsafe';
+  END IF;
+
+  SELECT procedure.prosecdef, procedure.proconfig,
+         procedure.proowner::regrole::text AS owner_name
+    INTO v_function
+    FROM pg_catalog.pg_proc AS procedure
+    WHERE procedure.oid =
+      'public.get_assigned_idea_evaluation_dossier(uuid)'::regprocedure;
+  IF NOT v_function.prosecdef
+     OR NOT ('search_path=pg_catalog' = ANY(v_function.proconfig))
+     OR v_function.owner_name <> 'javaneh_identity_executor' THEN
+    RAISE EXCEPTION 'Evaluator dossier RPC owner, search path, or security definer is unsafe';
   END IF;
 END
 $m9r14_schema_test$;
@@ -286,8 +311,8 @@ DECLARE
   v_access_test record;
 BEGIN
   FOR v_access_test IN
-    SELECT access_test.table_name, access_test.access_kind,
-           access_test.sql_text
+    SELECT access_test.table_name, access_test.operation,
+           access_test.statement
       FROM (VALUES
         (
           'idea_evaluation_permissions', 'SELECT',
@@ -345,9 +370,9 @@ BEGIN
       ) AS access_test(table_name, operation, statement)
   LOOP
     BEGIN
-      EXECUTE v_access_test.sql_text;
+      EXECUTE v_access_test.statement;
       RAISE EXCEPTION 'authenticated unexpectedly had % access to %',
-        v_access_test.access_kind, v_access_test.table_name;
+        v_access_test.operation, v_access_test.table_name;
     EXCEPTION WHEN insufficient_privilege THEN
       NULL;
     END;
@@ -397,6 +422,18 @@ BEGIN
   PERFORM pg_catalog.set_config(
     'request.jwt.claim.sub', 'a9b00000-0000-4000-8000-000000000003', true
   );
+  v_result := public.get_assigned_idea_evaluation_dossier(v_idea_id);
+  IF v_result->>'outcome' <> 'available'
+     OR v_result->>'revision'
+       <> pg_catalog.current_setting('test.m9r14_revision')
+     OR v_result #>> '{dossier,stages,0,data,content}'
+       <> 'final submitted stage 1'
+     OR v_result #>> '{dossier,stages,5,data,content}'
+       <> 'final submitted stage 6'
+     OR v_result ? 'history' THEN
+    RAISE EXCEPTION 'Assigned evaluator dossier projection is unsafe: %',
+      v_result;
+  END IF;
   v_result := public.start_idea_evaluation(v_idea_id);
   IF v_result->>'outcome' <> 'editing_window_active' THEN
     RAISE EXCEPTION 'Evaluation started before the editing window expired: %',
@@ -508,6 +545,10 @@ DECLARE
   v_idea_id uuid := pg_catalog.current_setting('test.m9r14_idea_id')::uuid;
   v_result jsonb;
 BEGIN
+  v_result := public.get_assigned_idea_evaluation_dossier(v_idea_id);
+  IF v_result->>'outcome' <> 'not_found_or_not_assigned' THEN
+    RAISE EXCEPTION 'Unassigned evaluator read a dossier: %', v_result;
+  END IF;
   v_result := public.start_idea_evaluation(v_idea_id);
   IF v_result->>'outcome' <> 'not_found_or_not_assigned' THEN
     RAISE EXCEPTION 'Unassigned user started evaluation: %', v_result;
@@ -530,6 +571,17 @@ BEGIN
      OR v_result->>'evaluated_revision'
        <> pg_catalog.current_setting('test.m9r14_revision') THEN
     RAISE EXCEPTION 'Evaluation did not start at the submitted revision: %',
+      v_result;
+  END IF;
+
+  v_result := public.get_assigned_idea_evaluation_dossier(v_idea_id);
+  IF v_result->>'outcome' <> 'available'
+     OR v_result->>'revision'
+       <> pg_catalog.current_setting('test.m9r14_revision')
+     OR v_result #>> '{dossier,stages,0,data,content}'
+       <> 'final submitted stage 1'
+     OR v_result ? 'history' THEN
+    RAISE EXCEPTION 'Evaluator dossier changed from the started revision: %',
       v_result;
   END IF;
 
@@ -581,6 +633,14 @@ BEGIN
      OR v_status ? 'events' THEN
     RAISE EXCEPTION 'Completed participant projection is unsafe: %', v_status;
   END IF;
+END
+$m9r14_lifecycle_test$;
+
+SET LOCAL ROLE javaneh_identity_executor;
+DO $m9r14_ledger_access_test$
+DECLARE
+  v_idea_id uuid := pg_catalog.current_setting('test.m9r14_idea_id')::uuid;
+BEGIN
   IF (
     SELECT pg_catalog.count(*)
       FROM public.official_points_ledger AS ledger
@@ -589,9 +649,8 @@ BEGIN
     RAISE EXCEPTION 'Evaluation completion created scoring ledger entries';
   END IF;
 END
-$m9r14_lifecycle_test$;
+$m9r14_ledger_access_test$;
 
-SET LOCAL ROLE javaneh_identity_executor;
 DO $m9r14_lifecycle_storage_test$
 DECLARE
   v_idea_id uuid := pg_catalog.current_setting('test.m9r14_idea_id')::uuid;

@@ -95,6 +95,44 @@ export async function loadParticipantWorkspace(): Promise<ParticipantWorkspace> 
   const evaluationStatusByIdea = new Map(
     validEvaluationResults.map((result) => [result.ideaId, result.status]),
   );
+  const feedbackByIdea = new Map<string, IdeaPortfolioItem["publishedFeedback"]>();
+  for (const idea of submittedIdeas) {
+    const { data: feedbackData, error: feedbackError } = await supabase.rpc(
+      "get_own_idea_published_feedback",
+      { p_idea_id: idea.id },
+    );
+    if (feedbackError) {
+      feedbackByIdea.set(idea.id, undefined);
+      continue;
+    }
+    if (!isRecord(feedbackData)) {
+      feedbackByIdea.set(idea.id, undefined);
+      continue;
+    }
+    if (feedbackData.outcome === "available") {
+      const versionNumber = Number(feedbackData.version_number);
+      const publishedAt = typeof feedbackData.published_at === "string"
+        ? feedbackData.published_at
+        : null;
+      const feedbackContent = typeof feedbackData.feedback_content === "string"
+        ? feedbackData.feedback_content
+        : null;
+      if (
+        feedbackContent &&
+        Number.isInteger(versionNumber) &&
+        versionNumber > 0 &&
+        publishedAt
+      ) {
+        feedbackByIdea.set(idea.id, {
+          content: feedbackContent,
+          version_number: versionNumber,
+          published_at: publishedAt,
+        });
+        continue;
+      }
+    }
+    feedbackByIdea.set(idea.id, undefined);
+  }
   const ideas: IdeaPortfolioItem[] = [];
   for (const idea of portfolio) {
     if (idea.status !== "submitted") {
@@ -103,7 +141,11 @@ export async function loadParticipantWorkspace(): Promise<ParticipantWorkspace> 
     }
     const evaluationStatus = evaluationStatusByIdea.get(idea.id);
     if (!evaluationStatus) return { kind: "error" };
-    ideas.push({ ...idea, evaluationStatus });
+    ideas.push({
+      ...idea,
+      evaluationStatus,
+      publishedFeedback: feedbackByIdea.get(idea.id),
+    });
   }
 
   return {

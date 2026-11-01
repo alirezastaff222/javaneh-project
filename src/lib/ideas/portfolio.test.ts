@@ -128,6 +128,36 @@ test("accepts only participant-safe evaluation states on submitted ideas", () =>
   );
 });
 
+test("accepts participant-safe published feedback metadata on submitted ideas", () => {
+  const submitted = fixtureIdea("idea-feedback", "submitted", 7, 6);
+  const portfolioItem = buildIdeaPortfolio([submitted.idea], submitted.stages)?.[0];
+
+  assert.ok(portfolioItem);
+  assert.equal(
+    isIdeaPortfolioItem({
+      ...portfolioItem,
+      evaluationStatus: "completed",
+      publishedFeedback: {
+        content: "بازخورد نهایی برای مشارکت‌کننده",
+        version_number: 2,
+        published_at: "2026-11-02T10:00:00Z",
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    isIdeaPortfolioItem({
+      ...portfolioItem,
+      publishedFeedback: {
+        content: "بازخورد نامعتبر",
+        version_number: 0,
+        published_at: "2026-11-02T10:00:00Z",
+      },
+    }),
+    false,
+  );
+});
+
 test("rejects incomplete or cross-idea stage data instead of misreporting progress", () => {
   const idea = fixtureIdea("idea-a", "in_progress", 1, 0);
 

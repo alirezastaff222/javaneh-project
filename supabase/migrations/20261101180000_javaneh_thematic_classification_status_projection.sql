@@ -139,8 +139,21 @@ BEGIN
 END
 $function$;
 
+DO $executor_create_check$
+BEGIN
+  IF pg_catalog.has_schema_privilege(
+       'javaneh_identity_executor', 'public', 'CREATE'
+     ) THEN
+    RAISE EXCEPTION
+      'javaneh_identity_executor already has CREATE on public; refusing temporary privilege window'
+      USING ERRCODE = '42501';
+  END IF;
+END
+$executor_create_check$;
+GRANT CREATE ON SCHEMA public TO javaneh_identity_executor;
 ALTER FUNCTION public.get_own_idea_classification_status(uuid)
   OWNER TO javaneh_identity_executor;
+REVOKE CREATE ON SCHEMA public FROM javaneh_identity_executor;
 REVOKE ALL ON FUNCTION public.get_own_idea_classification_status(uuid)
   FROM PUBLIC, anon, service_role;
 GRANT EXECUTE ON FUNCTION public.get_own_idea_classification_status(uuid)

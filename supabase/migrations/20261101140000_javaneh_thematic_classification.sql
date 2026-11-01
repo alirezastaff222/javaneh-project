@@ -59,6 +59,18 @@ BEGIN
   RETURN NEW;
 END
 $function$;
+DO $executor_create_check$
+BEGIN
+  IF pg_catalog.has_schema_privilege(
+       'javaneh_identity_executor', 'public', 'CREATE'
+     ) THEN
+    RAISE EXCEPTION
+      'javaneh_identity_executor already has CREATE on public; refusing temporary privilege window'
+      USING ERRCODE = '42501';
+  END IF;
+END
+$executor_create_check$;
+GRANT CREATE ON SCHEMA public TO javaneh_identity_executor;
 ALTER FUNCTION public.assign_idea_stage_confirmation_version()
   OWNER TO javaneh_identity_executor;
 REVOKE ALL ON FUNCTION public.assign_idea_stage_confirmation_version()
@@ -884,6 +896,7 @@ END
 $function$;
 ALTER FUNCTION public.fail_idea_classification(uuid, uuid, text)
   OWNER TO javaneh_identity_executor;
+REVOKE CREATE ON SCHEMA public FROM javaneh_identity_executor;
 REVOKE ALL ON FUNCTION public.fail_idea_classification(uuid, uuid, text)
   FROM PUBLIC, anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.fail_idea_classification(uuid, uuid, text)
@@ -901,7 +914,5 @@ COMMENT ON COLUMN public.idea_stage_confirmed_versions.source_confirmation_versi
   'Content-free Stage 1/2 source revision reference retained for classification traceability.';
 COMMENT ON COLUMN public.idea_classification_results.confidence IS
   'Optional model confidence, separate from thematic relevance percentages.';
-
-REVOKE CREATE ON SCHEMA public FROM javaneh_identity_executor;
 
 COMMIT;

@@ -2485,6 +2485,24 @@ export default function IdeasPage({
                   <p className="font-semibold">وضعیت ارزیابی انسانی</p>
                   <p>{humanEvaluationStatusLabel(selectedIdea.evaluationStatus)}</p>
                 </div>
+                {selectedIdea.publishedFeedback && (
+                  <div className="mb-6 rounded-xl border border-foreground/10 bg-foreground/[0.03] p-4 text-sm leading-7">
+                    <p className="mb-2 font-semibold">بازخورد منتشرشده</p>
+                    <p className="whitespace-pre-wrap text-foreground/90">
+                      {selectedIdea.publishedFeedback.content}
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-3 text-xs text-foreground/60">
+                      <span>
+                        تاریخ انتشار: {new Date(selectedIdea.publishedFeedback.published_at).toLocaleDateString("fa-IR", {
+                          dateStyle: "medium",
+                        })}
+                      </span>
+                      <span>
+                        نسخه: {selectedIdea.publishedFeedback.version_number}
+                      </span>
+                    </div>
+                  </div>
+                )}
               </>
             )}
 

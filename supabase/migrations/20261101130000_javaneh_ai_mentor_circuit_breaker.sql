@@ -162,6 +162,18 @@ BEGIN
   ));
 END
 $function$;
+DO $executor_create_check$
+BEGIN
+  IF pg_catalog.has_schema_privilege(
+       'javaneh_identity_executor', 'public', 'CREATE'
+     ) THEN
+    RAISE EXCEPTION
+      'javaneh_identity_executor already has CREATE on public; refusing temporary privilege window'
+      USING ERRCODE = '42501';
+  END IF;
+END
+$executor_create_check$;
+GRANT CREATE ON SCHEMA public TO javaneh_identity_executor;
 ALTER FUNCTION public.get_mentor_circuit_status(text)
   OWNER TO javaneh_identity_executor;
 REVOKE ALL ON FUNCTION public.get_mentor_circuit_status(text)
@@ -512,6 +524,7 @@ END
 $function$;
 ALTER FUNCTION public.record_mentor_provider_result(text, uuid, text, text, uuid)
   OWNER TO javaneh_identity_executor;
+REVOKE CREATE ON SCHEMA public FROM javaneh_identity_executor;
 REVOKE ALL ON FUNCTION public.record_mentor_provider_result(text, uuid, text, text, uuid)
   FROM PUBLIC, anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.record_mentor_provider_result(text, uuid, text, text, uuid)

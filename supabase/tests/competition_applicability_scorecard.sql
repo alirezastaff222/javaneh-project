@@ -170,12 +170,14 @@ SET LOCAL session_replication_role = origin;
 
 INSERT INTO public.competitions (
   id, competition_key, name, description, status,
-  scoring_configuration_version_id
+  scoring_configuration_version_id, entry_opens_at, entry_closes_at
 )
 VALUES (
   'a9500000-0000-4000-8000-000000000001', 'scorecard-active-test-one',
   'Scorecard active test one', 'Rollback-only active competition test.',
-  'active', 'a9400000-0000-4000-8000-000000000001'
+  'active', 'a9400000-0000-4000-8000-000000000001',
+  pg_catalog.clock_timestamp() - interval '1 hour',
+  pg_catalog.clock_timestamp() + interval '1 day'
 );
 
 DO $single_active_competition_test$
@@ -185,12 +187,14 @@ BEGIN
   BEGIN
     INSERT INTO public.competitions (
       id, competition_key, name, description, status,
-      scoring_configuration_version_id
+      scoring_configuration_version_id, entry_opens_at, entry_closes_at
     )
     VALUES (
       'a9500000-0000-4000-8000-000000000002', 'scorecard-active-test-two',
       'Scorecard active test two', 'Rollback-only active competition test.',
-      'active', 'a9400000-0000-4000-8000-000000000002'
+      'active', 'a9400000-0000-4000-8000-000000000002',
+      pg_catalog.clock_timestamp() - interval '1 hour',
+      pg_catalog.clock_timestamp() + interval '1 day'
     );
   EXCEPTION WHEN unique_violation THEN
     v_rejected := true;
