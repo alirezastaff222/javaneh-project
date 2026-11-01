@@ -1,0 +1,9 @@
+BEGIN;
+SELECT pg_catalog.set_config(
+  'request.jwt.claim.sub', 'a9950000-0000-4000-8000-000000000001', true
+);
+SELECT pg_catalog.pg_sleep(0.1);
+SELECT public.confirm_idea_stage(
+  ':idea_id'::uuid, 1::smallint, 1
+);
+COMMIT;

@@ -1,0 +1,16 @@
+BEGIN;
+SET LOCAL ROLE authenticated;
+SELECT pg_catalog.set_config(
+  'request.jwt.claim.sub', 'a9b21000-0000-4000-8000-000000000002', true
+);
+WITH claim AS (
+  SELECT public.reserve_mentor_request(
+    ('a9b22000-0000-4000-8000-' || pg_catalog.lpad(:client_id::text, 12, '0'))::uuid
+  ) AS result
+)
+INSERT INTO public.m9r11_mentor_request_outcomes (
+  scenario, client_id, outcome, state
+)
+SELECT 'distinct_ids', :client_id, result->>'outcome', result->>'state'
+  FROM claim;
+COMMIT;

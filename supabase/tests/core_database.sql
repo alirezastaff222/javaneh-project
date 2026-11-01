@@ -16,11 +16,13 @@ BEGIN
         'idea_stages',
         'idea_stage_confirmed_versions',
         'idea_deletion_audit',
-        'idea_save_requests'
+        'idea_save_requests',
+        'idea_dossier_versions',
+        'idea_dossier_edit_requests'
       )
       AND c.relkind = 'r';
-  IF v_count <> 5 OR pg_catalog.to_regclass('public.idea_sessions') IS NOT NULL THEN
-    RAISE EXCEPTION 'Core model must contain the five approved tables only';
+  IF v_count <> 7 OR pg_catalog.to_regclass('public.idea_sessions') IS NOT NULL THEN
+    RAISE EXCEPTION 'Core model contains a missing or unapproved persistence table';
   END IF;
 
   SELECT pg_catalog.count(*) INTO v_count
@@ -32,12 +34,14 @@ BEGIN
         'idea_stages',
         'idea_stage_confirmed_versions',
         'idea_deletion_audit',
-        'idea_save_requests'
+        'idea_save_requests',
+        'idea_dossier_versions',
+        'idea_dossier_edit_requests'
       )
       AND c.relrowsecurity
       AND c.relforcerowsecurity;
-  IF v_count <> 5 THEN
-    RAISE EXCEPTION 'All five core tables must have forced RLS';
+  IF v_count <> 7 THEN
+    RAISE EXCEPTION 'All seven core tables must have forced RLS';
   END IF;
 
   SELECT pg_catalog.count(*) INTO v_role_count
@@ -69,6 +73,21 @@ BEGIN
        'authenticated', 'public.idea_stage_confirmed_versions', 'DELETE'
      )
      OR pg_catalog.has_table_privilege(
+       'authenticated', 'public.idea_dossier_versions', 'SELECT'
+     )
+     OR pg_catalog.has_table_privilege(
+       'authenticated', 'public.idea_dossier_versions', 'INSERT'
+     )
+     OR pg_catalog.has_table_privilege(
+       'authenticated', 'public.idea_dossier_versions', 'UPDATE'
+     )
+     OR pg_catalog.has_table_privilege(
+       'authenticated', 'public.idea_dossier_versions', 'DELETE'
+     )
+     OR pg_catalog.has_table_privilege(
+       'authenticated', 'public.idea_dossier_edit_requests', 'SELECT'
+     )
+     OR pg_catalog.has_table_privilege(
        'service_role', 'public.idea_deletion_audit', 'SELECT'
      ) THEN
     RAISE EXCEPTION 'Client roles have unapproved table privileges';
@@ -95,12 +114,15 @@ BEGIN
         'save_idea_content',
         'request_idea_stage_confirmation',
         'confirm_idea_stage',
-        'delete_own_idea'
+        'delete_own_idea',
+        'set_idea_current_step',
+        'submit_idea',
+        'edit_submitted_idea'
       )
       AND p.prosecdef
       AND p.proowner = 'javaneh_identity_executor'::regrole
       AND p.proconfig @> ARRAY['search_path=pg_catalog'];
-  IF v_count <> 5 THEN
+  IF v_count <> 8 THEN
     RAISE EXCEPTION 'Protected functions do not have the approved owner or search path';
   END IF;
 
@@ -127,7 +149,9 @@ BEGIN
           'idea_stages',
           'idea_stage_confirmed_versions',
           'idea_deletion_audit',
-          'idea_save_requests'
+          'idea_save_requests',
+          'idea_dossier_versions',
+          'idea_dossier_edit_requests'
         )
         AND c.relowner = 'javaneh_identity_executor'::regrole
   ) THEN
@@ -681,6 +705,14 @@ BEGIN
      OR EXISTS (
        SELECT 1 FROM public.idea_save_requests
        WHERE idea_id = v_deleted_idea
+     )
+     OR EXISTS (
+       SELECT 1 FROM public.idea_dossier_versions
+       WHERE idea_id = v_deleted_idea
+     )
+     OR EXISTS (
+       SELECT 1 FROM public.idea_dossier_edit_requests
+       WHERE idea_id = v_deleted_idea
      ) THEN
     RAISE EXCEPTION 'Participant deletion left dependent idea records';
   END IF;
@@ -688,7 +720,8 @@ END
 $participant_deletion_test$;
 
 UPDATE public.ideas
-  SET status = 'submitted'
+  SET status = 'submitted',
+      submitted_at = pg_catalog.clock_timestamp()
   WHERE owner_id = 'a1000000-0000-4000-8000-000000000001'
     AND creation_request_id = 'c1000000-0000-4000-8000-000000000002';
 
