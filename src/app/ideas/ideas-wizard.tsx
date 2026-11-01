@@ -13,6 +13,8 @@ import {
   mentorFailureResponseSchema,
   mentorSuccessResponseSchema,
 } from "@/lib/ai/mentor/contracts";
+import { shouldDispatchAfterConfirmation } from "@/lib/ai/mentor/classification-dispatch";
+import ClassificationPanel from "./classification-panel";
 
 type IdeaStatus = "draft" | "in_progress" | "submitted";
 type StageStatus =
@@ -296,6 +298,8 @@ export default function IdeasPage() {
   >({});
   const [mentorErrors, setMentorErrors] = useState<Record<number, string>>({});
   const [mentorBusyStage, setMentorBusyStage] = useState<number | null>(null);
+  const [classificationTriggerVersion, setClassificationTriggerVersion] =
+    useState(0);
 
   const createRequestRef = useRef<string | null>(null);
   const createBusyRef = useRef(false);
@@ -1883,6 +1887,19 @@ export default function IdeasPage() {
       const confirmed = parseOutcome(confirmationResult.data);
       const outcome = String(confirmed?.outcome ?? "invalid_state");
       if (outcome === "confirmed" || outcome === "already_confirmed") {
+        if (
+          shouldDispatchAfterConfirmation({
+            stageNumber: currentStage,
+            outcome,
+            otherStageConfirmed: ideaStages.some(
+              (stage) =>
+                stage.stage_number === (currentStage === 1 ? 2 : 1) &&
+                stage.status === "confirmed",
+            ),
+          })
+        ) {
+          setClassificationTriggerVersion((version) => version + 1);
+        }
         const nextStep =
           typeof confirmed?.current_step === "number" &&
           Number.isInteger(confirmed.current_step)
@@ -2635,6 +2652,26 @@ export default function IdeasPage() {
                   )}
                 </div>
               </div>
+            )}
+            {(selectedIdea.current_step >= 2 ||
+              ideaStages.some(
+                (stage) => stage.stage_number === 2 && stage.status !== "locked",
+              )) && (
+              <ClassificationPanel
+                supabase={supabase}
+                ideaId={selectedIdea.id}
+                eligible={
+                  ideaStages.some(
+                    (stage) =>
+                      stage.stage_number === 1 && stage.status === "confirmed",
+                  ) &&
+                  ideaStages.some(
+                    (stage) =>
+                      stage.stage_number === 2 && stage.status === "confirmed",
+                  )
+                }
+                triggerVersion={classificationTriggerVersion}
+              />
             )}
           </section>
         )}

@@ -241,3 +241,84 @@ Exactly one row in `m9r12_mentor_circuit_probe_outcomes` must have outcome
 `tests/ai_mentor_circuit_breaker_concurrency_cleanup.sql` or drop that
 disposable database. Do not run these committed concurrency fixtures against a
 persistent or shared database.
+
+Phase 7's official weighted three-axis classification is added by
+`migrations/20261101140000_javaneh_thematic_classification.sql`. It seeds the
+six official axes in taxonomy version `phase7.v1`, tracks stable confirmed
+Stage 1/2 source revision IDs, and maintains separate current/pending/stale
+classification state and append-only successful results. The participant
+workspace calls the authenticated server route only after a successful
+relevant stage confirmation; failures do not roll back stage progress. The
+route reuses the server-only Gateway provider and Phase 6 provider/model circuit
+breaker without consuming mentor request quota or running a separate health
+probe. Forced RLS permits participants to read only their own classification
+state and the current result; trusted writes use restricted service-role RPCs.
+
+The additive correction
+`migrations/20261101150000_javaneh_thematic_classification_corrections.sql`
+replaces the completion RPC with PostgreSQL 17-compatible JSON object-key
+validation and runs an idempotent backfill for eligible confirmed Stage 1/2
+ideas that have no classification state. Existing matching results are linked
+as current only when the referenced taxonomy and selected active axes match;
+ideas with incomplete stages are excluded. The restricted maintenance RPC is
+executable only by the migration role and is safe to rerun.
+
+`migrations/20261101160000_javaneh_thematic_classification_dispatch.sql`
+adds persisted dispatch metadata and bounded retry policy. It also tightens
+legacy-result restoration to require exactly six active taxonomy axes and a
+valid stored result. The participant panel redispatches pending work on page
+load, waits for active attempt leases, and retries transient failures after
+server-enforced backoff. There are at most three claims per source revision;
+permanent failures are not retried. Expired attempts are reclaimed only by the
+same owner-checked atomic claim RPC.
+
+Run `tests/thematic_classification.sql` as `supabase_admin` against an isolated
+local or dedicated test database after applying all preceding migrations. It
+rolls back its fixtures and checks exact taxonomy names/definitions, seed
+idempotency, confirmation timing, structured-result constraints, retries,
+source revision invalidation, immutable history, and owner isolation. Never
+run it against production or a persistent/shared database.
+
+To exercise concurrent claims, use a fresh disposable PostgreSQL 17 database
+after applying the ordered migrations and the documented identity-bridge
+prerequisite. From the repository root, run setup as `supabase_admin`:
+
+```sh
+psql -X -v ON_ERROR_STOP=1 -U supabase_admin -d <disposable_database> \
+  -f supabase/tests/thematic_classification_concurrency_setup.sql
+```
+
+Copy the printed `owner_id`, `idea_id`, `stage_1_revision_id`, and
+`stage_2_revision_id`. Run two independent pgbench clients as the trusted
+`postgres` database role; the script switches to `service_role` only to call
+the restricted claim RPC and insert each outcome:
+
+```sh
+pgbench -n -c 2 -t 1 -U postgres \
+  -D "owner_id='<owner_uuid>'" \
+  -D "idea_id='<idea_uuid>'" \
+  -D "stage_1_revision_id='<stage_1_revision_uuid>'" \
+  -D "stage_2_revision_id='<stage_2_revision_uuid>'" \
+  -f supabase/tests/thematic_classification_concurrent.pgbench \
+  <disposable_database>
+```
+
+Assert one `claimed`, one `in_progress`, and zero successful result rows for
+this claim-only race:
+
+```sh
+psql -X -v ON_ERROR_STOP=1 -U supabase_admin -d <disposable_database> \
+  -f supabase/tests/thematic_classification_concurrency_assert.sql
+```
+
+Only after verifying the assertion, run cleanup as `supabase_admin`; the script
+also succeeds if setup did not commit, and verifies its fixture rows and tables
+are removed:
+
+```sh
+psql -X -v ON_ERROR_STOP=1 -U supabase_admin -d <disposable_database> \
+  -f supabase/tests/thematic_classification_concurrency_cleanup.sql
+```
+
+Drop the disposable database after all checks. Never run these committed
+concurrency fixtures against production or a persistent/shared database.

@@ -1,0 +1,17 @@
+BEGIN;
+SET LOCAL ROLE service_role;
+WITH claim AS (
+  SELECT public.claim_idea_classification(
+    :idea_id::uuid,
+    :owner_id::uuid,
+    :stage_1_revision_id::uuid,
+    :stage_2_revision_id::uuid,
+    'phase7.v1',
+    'phase7.classification.v1',
+    pg_catalog.gen_random_uuid()
+  ) AS result
+)
+INSERT INTO public.m9r13_classification_claim_outcomes (client_id, outcome)
+SELECT :client_id, claim.result->>'outcome'
+FROM claim;
+COMMIT;

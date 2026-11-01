@@ -6,6 +6,7 @@ import {
   NoObjectGeneratedError,
   Output,
 } from "ai";
+import type { ZodType } from "zod";
 import { mentorProviderResponseSchema } from "./contracts";
 
 export const DEFAULT_MENTOR_MODEL = "anthropic/claude-haiku-4.5";
@@ -38,6 +39,7 @@ export type MentorGenerationInput = {
   system: string;
   prompt: string;
   signal: AbortSignal;
+  outputSchema?: ZodType;
 };
 
 export type MentorGenerationResult = {
@@ -226,7 +228,9 @@ export function createGatewayMentorProvider(): MentorModelProvider {
           model: gateway(model),
           system: input.system,
           prompt: input.prompt,
-          output: Output.object({ schema: mentorProviderResponseSchema }),
+          output: Output.object({
+            schema: input.outputSchema ?? mentorProviderResponseSchema,
+          }),
           maxOutputTokens: MENTOR_MAX_OUTPUT_TOKENS,
           maxRetries: 0,
           abortSignal: input.signal,
