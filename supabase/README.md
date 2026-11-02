@@ -3,9 +3,38 @@
 The core schema is installed by the ordered SQL migrations in `migrations/`.
 Hosted Supabase and local/test databases use different prerequisite paths.
 
+## Current release gate
+
+The Supabase project is not connected in this checkout: no Supabase URL/key or
+database connection is configured, and neither the Supabase CLI nor `psql` is
+available. Production schema and migration history are therefore **unknown**;
+do not treat prior observations in this document as a current inventory.
+
+Before any production write, run
+[`operations/production-inventory.sql`](./operations/production-inventory.sql)
+once in the Supabase SQL Editor. Save every result grid and NOTICE and compare
+the results with the migration chain. The script reads catalogs, effective
+privileges, and migration metadata only; it does not modify schema or
+application data.
+
+Do not run `supabase db push`, replay all 35 migrations, mark migrations as
+applied, or execute a repair based only on timestamps while the existing
+project's state is unknown. First identify each migration's actual objects and
+classify it as applied, missing, partially applied, or inconsistent. For an
+existing project, prepare a reviewed, forward-only repair for the confirmed
+state; preserve data and migration history. Production writes require explicit
+authorization.
+
+For a genuinely clean disposable PostgreSQL 17/Supabase database, use the
+documented identity prerequisite and apply migrations in timestamp order,
+stopping on the first error. Run the relevant rollback-only SQL suites in
+`tests/` before treating the schema as usable. Do not use a destructive reset
+or these test fixtures on a persistent database.
+
 ## Hosted Supabase readiness
 
-The confirmed hosted SQL Editor session runs directly as `postgres`, which has
+Previously reported hosted observations say the SQL Editor session runs
+directly as `postgres`, which has
 `CREATEROLE`, effective `REFERENCES` and `TRIGGER` on `auth.users`, and effective
 `CREATE` on `public`. The `auth.users` owner is `supabase_auth_admin`.
 The prerequisite therefore does not attempt to re-grant the hosted migration
@@ -15,11 +44,11 @@ grant options.
 Before any hosted migration run, execute
 `operations/identity-bridge-prerequisite.sql` directly as `postgres`. It
 creates/restricts the two dedicated NOLOGIN roles and checks that the bridge
-and executor already have the required effective access to `auth.uid()` and
-`extensions.digest(bytea,text)`. It does not attempt to grant those privileges
-in hosted mode. The supplied hosted facts do not establish whether those
-privileges come from `PUBLIC` or another existing grant for the internal roles;
-the prerequisite check must pass before continuing.
+and executor have only the required effective access for the current core
+migration: `postgres` can call `auth.uid()` for the narrow identity wrapper,
+and the executor can call `extensions.digest(bytea,text)`. It does not attempt
+to re-grant hosted Auth privileges. The inventory and prerequisite checks
+must pass before continuing.
 
 The migration chain is **not yet cleared for a hosted run**. Many migrations
 temporarily grant `CREATE` on `public` to `javaneh_identity_executor` to
@@ -47,8 +76,9 @@ provisioning step:
   with the approved restricted role attributes;
 - grants those roles to the trusted migration role `postgres` only, so it
   can set function/schema ownership during migrations;
-- grants the bridge role only `USAGE` on `auth` and `EXECUTE` on
-  `auth.uid()`; and
+- grants the trusted `postgres` migration role only the Auth schema/function
+  access needed by the narrow identity wrapper; the bridge does not need
+  direct Auth ACLs; and
 - provisions the Auth, extension, public-schema, and trigger privileges needed
   by the local migration role.
 
@@ -56,6 +86,15 @@ Neither client role is granted membership in an internal role. Do not grant
 these roles to `anon`, `authenticated`, `service_role`, or `authenticator`.
 The migration checks each prerequisite and fails rather than weakening the
 design. The internal roles are never function fallbacks or table owners.
+
+`javaneh_private.current_uid()` remains owned by the restricted bridge role.
+It calls the private `javaneh_private.auth_uid()` SECURITY DEFINER wrapper,
+owned by `postgres`, whose fixed `pg_catalog` search path calls only the
+fully-qualified `auth.uid()`. The wrapper is executable only by the bridge;
+authenticated clients can execute only `current_uid()`. Migration
+`20261107000000_javaneh_hosted_identity_wrapper.sql` applies this narrow
+forward-compatible replacement to databases where the core migration already
+exists.
 
 Use only an isolated local or dedicated test Supabase project for local/test
 application and testing. Keep the private schema out of the PostgREST
@@ -74,6 +113,40 @@ transaction and rolls the entire test transaction back.
 Participants can read their own ideas and live stages. Confirmed-stage
 snapshots remain inaccessible to client roles until the deferred visibility
 decision in 03G is resolved.
+
+## Group participation migration
+
+`migrations/20261108000000_javaneh_group_participation.sql` is an additive
+forward migration for shared group identities, accepted memberships,
+email-bound seven-day invitations, ownership transfer, group-owned ideas,
+group quotas, and group score attribution. Apply it only after the production
+inventory has been reconciled and the same restricted identity prerequisite
+and hosted schema-owner/grant-option checks described above pass. Do not edit
+or replay the earlier migrations to install groups.
+
+Group-member idea mutations use narrowly scoped executor-owned RPCs that check
+current membership and then reuse the existing versioned idea workflow. The
+current-UID context override is transaction-local and is set only inside those
+membership-checked functions. RLS exposes group ideas, live stages, and
+group-attributed ledger entries only to accepted members. Group quota creation
+uses a per-group advisory transaction lock; it is separate from the unchanged
+three-idea individual quota. Existing milestone validation and award
+idempotency remain the scoring authority, while a trusted ledger trigger
+attributes group idea points to the group.
+
+Invitation acceptance is verified against the signed-in JWT email. No
+transactional email provider is configured; the participant screen creates
+the invitation record and offers a `mailto:` invitation containing the
+recipient-bound acceptance URL. Configure a trusted email delivery service
+before advertising automatic invitation delivery. The migration deliberately
+blocks deletion of an account that still anchors a group idea, because the
+legacy idea schema cascades idea records on account deletion; transfer alone
+does not rewrite that historical anchor.
+
+The migration has not been applied or exercised against production from this
+checkout. Validate it and the new group behavior on an isolated Supabase
+database, including membership revocation races, quota concurrency, and
+account-deletion behavior, before deployment.
 
 The SQL function contract returns JSON objects with an `outcome` key. Save
 results additionally include `result_revision`; replays include

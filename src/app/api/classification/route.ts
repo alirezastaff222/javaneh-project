@@ -7,7 +7,13 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 
 const requestSchema = z.object({ ideaId: z.string().uuid() }).strict();
-const ideaSchema = z.object({ id: z.string().uuid() }).strict();
+const ideaSchema = z
+  .object({
+    id: z.string().uuid(),
+    owner_id: z.string().uuid(),
+    group_id: z.string().uuid().nullable(),
+  })
+  .strict();
 const stageSchema = z
   .object({
     stage_number: z.union([z.literal(1), z.literal(2)]),
@@ -66,9 +72,8 @@ export async function POST(request: NextRequest) {
 
     const { data: ideaRow, error: ideaError } = await supabase
       .from("ideas")
-      .select("id")
+      .select("id,owner_id,group_id")
       .eq("id", parsedRequest.data.ideaId)
-      .eq("owner_id", data.user.id)
       .maybeSingle();
     if (ideaError) {
       reportFailure("idea_lookup_unavailable");
@@ -76,6 +81,21 @@ export async function POST(request: NextRequest) {
     }
     const parsedIdea = ideaSchema.safeParse(ideaRow);
     if (!parsedIdea.success) return response("idea_unavailable", 404);
+    const admin = createAdminClient();
+    if (parsedIdea.data.group_id) {
+      const { data: groupRow, error: groupError } = await admin
+        .from("participant_groups")
+        .select("dissolved_at")
+        .eq("id", parsedIdea.data.group_id)
+        .maybeSingle();
+      if (groupError) {
+        reportFailure("group_status_unavailable");
+        return response("context_unavailable", 503);
+      }
+      if (!groupRow || groupRow.dissolved_at !== null) {
+        return response("idea_unavailable", 404);
+      }
+    }
 
     const { data: stageRows, error: stagesError } = await supabase
       .from("idea_stages")
@@ -135,11 +155,10 @@ export async function POST(request: NextRequest) {
       return response("taxonomy_unavailable", 503);
     }
 
-    const admin = createAdminClient();
     const status = await classifyIdea(
       {
         ideaId: parsedIdea.data.id,
-        participantId: data.user.id,
+        participantId: parsedIdea.data.owner_id,
         stage1: {
           revisionId: stage1.confirmed_version_id,
           content: stage1.content,

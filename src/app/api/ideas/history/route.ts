@@ -23,8 +23,16 @@ export async function GET(request: Request) {
       return user ? { context: supabase } : null;
     },
     fetchHistory: async (ideaId, supabase) => {
+      const { data: idea, error: ideaError } = await supabase
+        .from("ideas")
+        .select("group_id")
+        .eq("id", ideaId)
+        .maybeSingle();
+      if (ideaError) throw ideaError;
       const { data, error } = await supabase.rpc(
-        "get_own_submitted_idea_dossier_history",
+        idea?.group_id
+          ? "get_group_dossier_history"
+          : "get_own_submitted_idea_dossier_history",
         { p_idea_id: ideaId },
       );
       if (error?.code === "42501") {

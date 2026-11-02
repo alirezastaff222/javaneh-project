@@ -13,12 +13,14 @@ import {
   IDEA_QUOTA_LIMIT,
   canCreateIdea,
   getAvailableIdeaSlots,
+  getIdeaCountForScope,
   isIdeaPortfolioItem,
   type HumanEvaluationStatus,
   type IdeaPortfolioItem,
   type StageStatus,
 } from "@/lib/ideas/portfolio";
 import type { ParticipantWorkspace } from "@/lib/ideas/participant-workspace";
+import type { ParticipantGroup } from "@/lib/ideas/participant-groups";
 import { parseDossierHistory } from "@/lib/ideas/dossier-history";
 import {
   mentorFailureResponseSchema,
@@ -26,7 +28,9 @@ import {
 } from "@/lib/ai/mentor/contracts";
 import { shouldDispatchAfterConfirmation } from "@/lib/ai/mentor/classification-dispatch";
 import ClassificationPanel from "./classification-panel";
-import ParticipantScorecard from "./participant-scorecard";
+import ParticipantScorecard, {
+  ParticipantScorecardSummary,
+} from "./participant-scorecard";
 import MilestoneEvaluationControls from "./milestone-evaluation-controls";
 import JuryScoreSummary from "./jury-score-summary";
 import FinalResultSummary from "./final-result-summary";
@@ -37,12 +41,18 @@ import DossierHistoryInspector, {
   DossierHistoryEntryPoint,
   type DossierHistoryViewState,
 } from "./dossier-history-inspector";
+import ParticipantGroupsPanel from "./participant-groups-panel";
 
 type Idea = IdeaPortfolioItem;
 
 type IdeaDraftData = Record<string, unknown> & {
   content?: string;
 };
+
+type WorkspaceErrorCode = Extract<
+  ParticipantWorkspace,
+  { kind: "error" }
+>["code"];
 
 type IdeaStage = {
   stage_number: number;
@@ -89,14 +99,16 @@ type MentorUiStatus =
   | "recovery_in_progress"
   | "restored";
 
-function workspaceErrorMessage(
-  code: "ideas_unavailable" | "stages_unavailable" | "invalid_workspace",
-): string {
+function workspaceErrorMessage(code: WorkspaceErrorCode): string {
   switch (code) {
     case "ideas_unavailable":
       return "فهرست ایده‌های شما در حال حاضر از پایگاه داده در دسترس نیست. اتصال یا تنظیمات پایگاه داده را بررسی کنید و دوباره تلاش کنید.";
     case "stages_unavailable":
       return "مراحل ایده‌های شما در حال حاضر بارگذاری نشدند. دوباره تلاش کنید.";
+    case "evaluations_unavailable":
+      return "وضعیت بررسی انسانی ایده‌های ثبت‌شده بارگذاری نشد. دوباره تلاش کنید.";
+    case "feedback_unavailable":
+      return "بازخورد منتشرشده برای ایده‌های ثبت‌شده بارگذاری نشد. دوباره تلاش کنید.";
     default:
       return "اطلاعات فضای کار معتبر نبود. دوباره تلاش کنید.";
   }
@@ -167,7 +179,7 @@ function readContent(stage: IdeaStage): string {
 function outcomeMessage(outcome: string): string {
   switch (outcome) {
     case "quota_exceeded":
-      return "در حال حاضر حداکثر سه ایده فعال مجاز است. برای ایجاد ایده جدید، ابتدا یکی از ایده‌های قبلی را حذف کنید.";
+      return "سهمیه سه ایده فعال برای این حساب یا گروه تکمیل شده است. برای ایجاد ایده تازه، ابتدا یکی از ایده‌های قابل حذف را حذف کنید.";
     case "already_deleted":
       return "این درخواست قبلاً حذف شده است و امکان ایجاد دوباره آن وجود ندارد.";
     case "stale_revision":
@@ -275,10 +287,15 @@ function statusStyle(status: StageStatus): string {
 
 export default function IdeasPage({
   initialWorkspace,
+  initialIdeaText = "",
+  initialGroupInvitationId = "",
 }: {
   initialWorkspace: ParticipantWorkspace;
+  initialIdeaText?: string;
+  initialGroupInvitationId?: string;
 }) {
   const supabase = useMemo(() => createClient(), []);
+  const [ideaPrompt, setIdeaPrompt] = useState(initialIdeaText);
   const initialProfile =
     initialWorkspace.kind === "authenticated" ? initialWorkspace.profile : null;
   const [user, setUser] = useState<User | null>(null);
@@ -296,6 +313,8 @@ export default function IdeasPage({
       ? workspaceErrorMessage(initialWorkspace.code)
       : null,
   );
+  const [groups, setGroups] = useState<ParticipantGroup[]>([]);
+  const [selectedCreateGroupId, setSelectedCreateGroupId] = useState("");
   const [selectedIdea, setSelectedIdea] = useState<Idea | null>(null);
   const [dossierPreviewOpen, setDossierPreviewOpen] = useState(false);
   const [dossierHistoryOpen, setDossierHistoryOpen] = useState(false);
@@ -360,6 +379,7 @@ export default function IdeasPage({
   const submissionRequestIds = useRef(new Map<string, string>());
   const pendingSaveRef = useRef<PendingSave | null>(null);
   const handledInitialSelection = useRef(false);
+  const initialIdeaDraft = useRef<{ ideaId: string; content: string } | null>(null);
   const activeUserId = useRef<string | null>(
     initialWorkspace.kind === "authenticated"
       ? initialWorkspace.profile.id
@@ -567,6 +587,15 @@ export default function IdeasPage({
         ]),
       );
       let recoveredStage = idea.current_step;
+      const initialDraft = initialIdeaDraft.current;
+      if (initialDraft?.ideaId === idea.id) {
+        if (!readContent(loadedStages[0]).trim()) {
+          loadedDrafts[1] = initialDraft.content;
+          recoveredStage = 1;
+          setSyncStatus("pending");
+        }
+        initialIdeaDraft.current = null;
+      }
       const recoveryKey = activeUserId.current
         ? localDraftKey(activeUserId.current, idea.id)
         : null;
@@ -734,12 +763,23 @@ export default function IdeasPage({
 
   useEffect(() => {
     if (!user) return;
-    const storageKey = `javaneh.pending_create_request_id:${user.id}`;
+    const storageKey =
+      `javaneh.pending_create_request_id:${user.id}:${selectedCreateGroupId || "individual"}`;
     let active = true;
     void Promise.resolve().then(() => {
       if (!active) return;
+      setCreateRequestStorageReady(false);
       try {
-        const storedRequestId = window.sessionStorage.getItem(storageKey);
+        const legacyStorageKey =
+          `javaneh.pending_create_request_id:${user.id}`;
+        const storedRequestId = window.sessionStorage.getItem(storageKey) ??
+          (selectedCreateGroupId === ""
+            ? window.sessionStorage.getItem(legacyStorageKey)
+            : null);
+        if (storedRequestId && selectedCreateGroupId === "") {
+          window.sessionStorage.setItem(storageKey, storedRequestId);
+          window.sessionStorage.removeItem(legacyStorageKey);
+        }
         createRequestRef.current = storedRequestId;
         setPendingCreateRequestId(storedRequestId);
         setPendingCreateStorageError(null);
@@ -754,7 +794,7 @@ export default function IdeasPage({
     return () => {
       active = false;
     };
-  }, [user]);
+  }, [user, selectedCreateGroupId]);
 
   useEffect(() => {
     if (!user) return;
@@ -829,7 +869,19 @@ export default function IdeasPage({
     ) &&
     currentStage >= 1 &&
     currentStage <= 6 &&
-    (selectedIdea?.status !== "submitted" || editingWindowActive);
+    (selectedIdea?.status !== "submitted" || editingWindowActive) &&
+    (selectedIdea?.group_id === null ||
+      (groups.some((group) =>
+        group.id === selectedIdea?.group_id &&
+        group.dissolved_at === null,
+      )));
+  const canManageSelectedIdea =
+    selectedIdea?.group_id === null ||
+    groups.some((group) =>
+      group.id === selectedIdea?.group_id &&
+      group.role === "owner" &&
+      group.dissolved_at === null,
+    );
   const selectedStageDefinition = IDEA_STAGES[currentStage - 1];
   const currentMentorGuidance =
     selectedStageDefinition && selectedStageDefinition.number <= 6
@@ -846,6 +898,14 @@ export default function IdeasPage({
     ideaStages
       .filter((stage) => stage.stage_number <= 6)
       .every((stage) => stage.status === "confirmed");
+  const creationIdeaCount = getIdeaCountForScope(
+    ideas,
+    selectedCreateGroupId || null,
+  );
+  const creationAvailableSlots = getAvailableIdeaSlots(
+    creationIdeaCount,
+    ideasLoaded,
+  );
 
   useEffect(() => {
     if (!isDirty) return;
@@ -865,6 +925,7 @@ export default function IdeasPage({
       });
       return;
     }
+
     stageLoadVersion.current += 1;
     dossierHistoryLoadVersion.current += 1;
     setDossierPreviewOpen(false);
@@ -879,6 +940,17 @@ export default function IdeasPage({
       null,
       "",
       `/ideas?idea=${encodeURIComponent(idea.id)}`,
+    );
+  }
+
+  function canManageIdea(idea: Idea | null): boolean {
+    if (!idea) return false;
+    if (!idea.group_id) return true;
+    return groups.some(
+      (group) =>
+        group.id === idea.group_id &&
+        group.role === "owner" &&
+        group.dissolved_at === null,
     );
   }
 
@@ -918,10 +990,13 @@ export default function IdeasPage({
     stepBusyRef.current = true;
     setStepSaving(true);
     try {
-      const { data, error } = await supabase.rpc("set_idea_current_step", {
-        p_idea_id: idea.id,
-        p_current_step: stageNumber,
-      });
+      const { data, error } = await supabase.rpc(
+        idea.group_id ? "set_group_idea_current_step" : "set_idea_current_step",
+        {
+          p_idea_id: idea.id,
+          p_current_step: stageNumber,
+        },
+      );
       if (activeUserId.current !== requestUserId) {
         return false;
       }
@@ -997,7 +1072,10 @@ export default function IdeasPage({
     }
   }
 
-  async function createIdea(): Promise<void> {
+  async function createIdea(
+    initialContent = "",
+    groupId: string | null = selectedCreateGroupId || null,
+  ): Promise<void> {
     if (
       createBusyRef.current ||
       !createRequestStorageReady ||
@@ -1008,14 +1086,21 @@ export default function IdeasPage({
     }
     createBusyRef.current = true;
     setCreating(true);
-    setNotice({ kind: "info", message: "در حال ایجاد ایده…" });
+    setNotice({
+      kind: "info",
+      message: groupId
+        ? "در حال ایجاد ایده مشترک گروه…"
+        : "در حال ایجاد ایده فردی…",
+    });
+    const storageKey =
+      `javaneh.pending_create_request_id:${user.id}:${groupId ?? "individual"}`;
 
     let requestId = createRequestRef.current;
     if (!requestId) {
       requestId = createRequestId();
       try {
         window.sessionStorage.setItem(
-          `javaneh.pending_create_request_id:${user.id}`,
+          storageKey,
           requestId,
         );
       } catch {
@@ -1031,9 +1116,12 @@ export default function IdeasPage({
     }
 
     try {
-      const { data, error } = await supabase.rpc("create_idea", {
-        p_request_id: requestId,
-      });
+      const { data, error } = groupId
+        ? await supabase.rpc("create_group_idea", {
+            p_group_id: groupId,
+            p_request_id: requestId,
+          })
+        : await supabase.rpc("create_idea", { p_request_id: requestId });
       if (activeUserId.current !== user.id) return;
       if (error) {
         setNotice({ kind: "error", message: getErrorMessage(error) });
@@ -1060,7 +1148,7 @@ export default function IdeasPage({
         }
 
         window.sessionStorage.removeItem(
-          `javaneh.pending_create_request_id:${user.id}`,
+          storageKey,
         );
         createRequestRef.current = null;
         setPendingCreateRequestId(null);
@@ -1074,6 +1162,14 @@ export default function IdeasPage({
             message: "ایده ایجاد شد، اما در فهرست شما بارگذاری نشد. فهرست را تازه‌سازی کنید.",
           });
           return;
+        }
+        const prompt = initialContent.trim();
+        if (prompt) {
+          initialIdeaDraft.current = {
+            ideaId: createdIdea.id,
+            content: prompt,
+          };
+          setIdeaPrompt("");
         }
         setNotice({
           kind: "success",
@@ -1091,7 +1187,7 @@ export default function IdeasPage({
         outcome === "already_deleted"
       ) {
         window.sessionStorage.removeItem(
-          `javaneh.pending_create_request_id:${user.id}`,
+          storageKey,
         );
         createRequestRef.current = null;
         setPendingCreateRequestId(null);
@@ -1114,6 +1210,7 @@ export default function IdeasPage({
       deleteBusyRef.current ||
       !user ||
       !ideaToDelete ||
+      !canManageIdea(ideaToDelete) ||
       ideaToDelete.status === "submitted" ||
       saving ||
       confirming ||
@@ -1135,9 +1232,10 @@ export default function IdeasPage({
     setNotice({ kind: "info", message: "در حال حذف دائمی ایده…" });
     const ideaId = ideaToDelete.id;
     try {
-      const { data, error } = await supabase.rpc("delete_own_idea", {
-        p_idea_id: ideaId,
-      });
+      const { data, error } = await supabase.rpc(
+        ideaToDelete.group_id ? "delete_group_idea" : "delete_own_idea",
+        { p_idea_id: ideaId },
+      );
       if (activeUserId.current !== user.id) return;
       if (error) {
         setNotice({ kind: "error", message: getErrorMessage(error) });
@@ -1217,6 +1315,7 @@ export default function IdeasPage({
       submitBusyRef.current ||
       !user ||
       !selectedIdea ||
+      !canManageSelectedIdea ||
       selectedIdea.status === "submitted" ||
       revision === null ||
       !allDevelopmentStagesConfirmed ||
@@ -1225,6 +1324,14 @@ export default function IdeasPage({
       saving ||
       confirming ||
       stepSaving
+    ) {
+      return;
+    }
+
+    if (
+      !window.confirm(
+        "ثبت نهایی پرونده را آغاز می‌کند. پس از ثبت، مهلت ویرایش ۱۶۸ ساعته آغاز می‌شود و بعد از آن پرونده قفل خواهد شد. آیا ادامه می‌دهید؟",
+      )
     ) {
       return;
     }
@@ -1260,11 +1367,14 @@ export default function IdeasPage({
     setSubmitting(true);
     setNotice({ kind: "info", message: "در حال ثبت نهایی ایده…" });
     try {
-      const { data, error } = await supabase.rpc("submit_idea", {
-        p_idea_id: selectedIdea.id,
-        p_request_id: requestId,
-        p_expected_revision: revision,
-      });
+      const { data, error } = await supabase.rpc(
+        selectedIdea.group_id ? "submit_group_idea" : "submit_idea",
+        {
+          p_idea_id: selectedIdea.id,
+          p_request_id: requestId,
+          p_expected_revision: revision,
+        },
+      );
       if (activeUserId.current !== user.id) return;
       if (error) {
         setNotice({ kind: "error", message: getErrorMessage(error) });
@@ -1455,7 +1565,11 @@ export default function IdeasPage({
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
           const result = request.submittedEdit
-            ? await supabase.rpc("edit_submitted_idea", {
+            ? await supabase.rpc(
+                selectedIdea.group_id
+                  ? "edit_group_submitted_idea"
+                  : "edit_submitted_idea",
+                {
                 p_idea_id: request.ideaId,
                 p_request_id: request.requestId,
                 p_expected_revision: request.expectedRevision,
@@ -1465,8 +1579,13 @@ export default function IdeasPage({
                     data: request.stageData,
                   },
                 ],
-              })
-            : await supabase.rpc("save_idea_content", {
+              },
+              )
+            : await supabase.rpc(
+                selectedIdea.group_id
+                  ? "save_group_idea_content"
+                  : "save_idea_content",
+                {
                 p_idea_id: request.ideaId,
                 p_request_id: request.requestId,
                 p_expected_revision: request.expectedRevision,
@@ -1476,7 +1595,8 @@ export default function IdeasPage({
                     data: request.stageData,
                   },
                 ],
-              });
+              },
+              );
           if (!result.error) {
             responseData = result.data;
             responseError = null;
@@ -1963,7 +2083,9 @@ export default function IdeasPage({
     setNotice({ kind: "info", message: "در حال ثبت تأیید مرحله…" });
     try {
       const requestResult = await supabase.rpc(
-        "request_idea_stage_confirmation",
+        selectedIdea.group_id
+          ? "request_group_idea_stage_confirmation"
+          : "request_idea_stage_confirmation",
         {
           p_idea_id: selectedIdea.id,
           p_stage_number: currentStage,
@@ -1992,11 +2114,16 @@ export default function IdeasPage({
         return;
       }
 
-      const confirmationResult = await supabase.rpc("confirm_idea_stage", {
-        p_idea_id: selectedIdea.id,
-        p_stage_number: currentStage,
-        p_expected_revision: revision,
-      });
+      const confirmationResult = await supabase.rpc(
+        selectedIdea.group_id
+          ? "confirm_group_idea_stage"
+          : "confirm_idea_stage",
+        {
+          p_idea_id: selectedIdea.id,
+          p_stage_number: currentStage,
+          p_expected_revision: revision,
+        },
+      );
       if (activeUserId.current !== user.id) return;
       if (confirmationResult.error) {
         setNotice({
@@ -2169,9 +2296,11 @@ export default function IdeasPage({
             className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3"
           >
             <div className="rounded-xl border border-foreground/10 bg-white p-4 dark:bg-neutral-950">
-              <p className="text-sm text-foreground/60">ایده‌های استفاده‌شده</p>
+              <p className="text-sm text-foreground/60">ایده‌های فردی استفاده‌شده</p>
               <p className="mt-1 text-2xl font-semibold">
-                {ideasLoaded ? ideas.length : "—"}
+                {ideasLoaded
+                  ? getIdeaCountForScope(ideas, null)
+                  : "—"}
               </p>
             </div>
             <div className="rounded-xl border border-foreground/10 bg-white p-4 dark:bg-neutral-950">
@@ -2181,11 +2310,19 @@ export default function IdeasPage({
             <div className="rounded-xl border border-foreground/10 bg-white p-4 dark:bg-neutral-950">
               <p className="text-sm text-foreground/60">ظرفیت باقی‌مانده</p>
               <p className="mt-1 text-2xl font-semibold">
-                {getAvailableIdeaSlots(ideas.length, ideasLoaded) ?? "—"}
+                {getAvailableIdeaSlots(
+                  getIdeaCountForScope(ideas, null),
+                  ideasLoaded,
+                ) ?? "—"}
               </p>
             </div>
           </section>
         </header>
+
+        <ParticipantGroupsPanel
+          onGroupsChange={setGroups}
+          highlightedInvitationId={initialGroupInvitationId}
+        />
 
         {notice && (
           <div
@@ -2223,29 +2360,72 @@ export default function IdeasPage({
                   ثبت‌شده نیز تا بررسی انسانی سهمیه شما را اشغال می‌کنند.
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => void createIdea()}
-                disabled={
-                  creating ||
-                  !createRequestStorageReady ||
-                  pendingCreateStorageError !== null ||
-                  ideasLoading ||
-                  !canCreateIdea(
-                    ideas.length,
-                    ideasLoaded,
-                    pendingCreateRequestId !== null,
-                  )
-                }
-                className="inline-flex min-h-11 items-center justify-center rounded-lg bg-foreground px-5 font-medium text-background transition-opacity hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {creating
-                  ? "در حال ایجاد…"
-                  : pendingCreateRequestId
-                    ? "تلاش دوباره برای ایجاد"
-                    : "ایجاد ایده جدید"}
-              </button>
+              <div className="flex flex-col gap-2 sm:min-w-64">
+                <label className="text-xs text-foreground/60">
+                  نوع مالکیت ایده
+                  <select
+                    value={selectedCreateGroupId}
+                    onChange={(event) => setSelectedCreateGroupId(event.target.value)}
+                    disabled={creating}
+                    className="mt-1 min-h-10 w-full rounded-lg border border-foreground/20 bg-white px-3 text-sm text-foreground dark:bg-neutral-950"
+                  >
+                    <option value="">ایده فردی (سهمیه شخصی)</option>
+                    {groups
+                      .filter((group) => group.dissolved_at === null)
+                      .map((group) => (
+                        <option key={group.id} value={group.id}>
+                          گروه: {group.name}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void createIdea(ideaPrompt)}
+                  disabled={
+                    creating ||
+                    !createRequestStorageReady ||
+                    pendingCreateStorageError !== null ||
+                    ideasLoading ||
+                    !canCreateIdea(
+                      creationIdeaCount,
+                      ideasLoaded,
+                      pendingCreateRequestId !== null,
+                    )
+                  }
+                  className="inline-flex min-h-11 items-center justify-center rounded-lg bg-foreground px-5 font-medium text-background transition-opacity hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {creating
+                    ? "در حال ایجاد…"
+                    : pendingCreateRequestId
+                      ? "تلاش دوباره برای ایجاد"
+                      : ideaPrompt.trim()
+                        ? "آغاز ایده با این مسئله"
+                        : "ایجاد ایده جدید"}
+                </button>
+              </div>
             </div>
+
+            {ideasLoaded &&
+              creationAvailableSlots === 0 && (
+                <p role="status" className="mt-5 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm leading-7 text-amber-950">
+                  {selectedCreateGroupId
+                    ? "این گروه به سقف سه ایده فعال رسیده است. ایده‌های ثبت نهایی‌شده نیز تا پایان فرایند بررسی سهمیه گروه را اشغال می‌کنند."
+                    : "به سقف سه ایده فردی فعال رسیده‌اید. ایده‌های ثبت نهایی‌شده نیز تا پایان فرایند بررسی سهمیه شما را اشغال می‌کنند."}{" "}
+                  برای ایجاد ایده تازه، ابتدا یکی از ایده‌های قابل حذف را حذف کنید.
+                </p>
+              )}
+
+            {ideaPrompt.trim() && (
+              <div className="mt-5 rounded-xl border border-foreground/10 bg-foreground/[0.025] p-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-foreground/55">
+                  مسئله‌ای که می‌خواهید روی آن کار کنید
+                </p>
+                <p className="mt-2 whitespace-pre-wrap text-sm leading-7">
+                  {ideaPrompt}
+                </p>
+              </div>
+            )}
 
             {ideasError && (
               <div className="mt-6 flex flex-col gap-3 rounded-xl bg-red-50 p-4 text-sm text-red-900 dark:bg-red-950/40 dark:text-red-200 sm:flex-row sm:items-center sm:justify-between">
@@ -2282,11 +2462,19 @@ export default function IdeasPage({
                       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                         <div className="min-w-0">
                           <h3 className="font-semibold">
-                            ایده {idea.id.slice(0, 8)}
+                            {idea.title ?? "ایده بدون عنوان"}
                           </h3>
                           <p className="mt-1 text-sm text-foreground/60">
-                            شناسه: <span dir="ltr">{idea.id}</span> · نسخه {idea.revision}
+                            نسخه {idea.revision} · شناسه: <span dir="ltr">{idea.id}</span>
                           </p>
+                          {idea.group_id && (
+                            <p className="mt-2 text-sm font-medium text-blue-800 dark:text-blue-200">
+                              ایده مشترک گروه «
+                              {groups.find((group) => group.id === idea.group_id)?.name ??
+                                "گروه"}
+                              » · همه اعضا ویرایش می‌کنند؛ فقط نماینده ثبت نهایی و حذف می‌کند.
+                            </p>
+                          )}
                           <p className="mt-3 inline-flex rounded-full bg-foreground/[0.06] px-3 py-1 text-sm font-medium">
                             {idea.status === "submitted"
                               ? "ثبت نهایی‌شده"
@@ -2305,7 +2493,7 @@ export default function IdeasPage({
                           >
                             ادامه کار
                           </button>
-                          {idea.status !== "submitted" && (
+                          {idea.status !== "submitted" && canManageIdea(idea) && (
                             <button
                               type="button"
                               onClick={() => void deleteIdea(idea)}
@@ -2352,6 +2540,11 @@ export default function IdeasPage({
                         </p>
                       </div>
 
+                      <ParticipantScorecardSummary
+                        ideaId={idea.id}
+                        isGroupIdea={idea.group_id !== null}
+                      />
+
                       <div className="mt-4">
                         <div className="mb-2 flex items-center justify-between gap-3 text-sm">
                           <span>
@@ -2397,11 +2590,20 @@ export default function IdeasPage({
                   بازگشت به ایده‌های من
                 </button>
                 <h2 className="mt-3 text-xl font-semibold">
-                  ایده {selectedIdea.id.slice(0, 8)}
+                  {selectedIdea.title ?? `ایده ${selectedIdea.id.slice(0, 8)}`}
                 </h2>
                 <p className="mt-1 text-sm text-foreground/60">
                   نسخه پایگاه داده: {revision ?? "—"}
                 </p>
+                {selectedIdea.group_id && (
+                  <p className="mt-2 text-sm leading-6 text-blue-800 dark:text-blue-200">
+                    مالک این ایده گروه «
+                    {groups.find((group) => group.id === selectedIdea.group_id)?.name ??
+                      "گروه"}
+                    » است. اعضای پذیرفته‌شده می‌توانند ویرایش و معیارها را برای بررسی ثبت کنند؛ فقط نماینده گروه اجازه ثبت نهایی و حذف دارد.
+                    {!canManageSelectedIdea && " شما به‌عنوان عضو گروه در حال ویرایش هستید."}
+                  </p>
+                )}
                 <p
                   role="status"
                   aria-live="polite"
@@ -2448,7 +2650,8 @@ export default function IdeasPage({
                 >
                   بارگذاری آخرین نسخه
                 </button>
-                {selectedIdea.status !== "submitted" && (
+                {selectedIdea.status !== "submitted" &&
+                  canManageIdea(selectedIdea) && (
                   <button
                     type="button"
                     onClick={() => void deleteIdea()}
@@ -2541,10 +2744,17 @@ export default function IdeasPage({
               />
             )}
 
-            <ParticipantScorecard key={selectedIdea.id} ideaId={selectedIdea.id} />
+            <ParticipantScorecard
+              key={selectedIdea.id}
+              ideaId={selectedIdea.id}
+              isGroupIdea={selectedIdea.group_id !== null}
+            />
             <JuryScoreSummary ideaId={selectedIdea.id} />
             <FinalResultSummary ideaId={selectedIdea.id} />
-            <MilestoneEvaluationControls ideaId={selectedIdea.id} />
+            <MilestoneEvaluationControls
+              ideaId={selectedIdea.id}
+              isGroupIdea={selectedIdea.group_id !== null}
+            />
 
             {stagesError && (
               <div className="mb-6 rounded-xl bg-red-50 p-4 text-sm leading-7 text-red-900 dark:bg-red-950/40 dark:text-red-200">
@@ -2923,7 +3133,8 @@ export default function IdeasPage({
                               </button>
                             )}
                             {currentStage === 6 &&
-                              allDevelopmentStagesConfirmed && (
+                              allDevelopmentStagesConfirmed &&
+                              canManageSelectedIdea && (
                                   <button
                                     type="button"
                                     onClick={() => void submitIdea()}
@@ -2969,6 +3180,7 @@ export default function IdeasPage({
               <ClassificationPanel
                 supabase={supabase}
                 ideaId={selectedIdea.id}
+                isGroupIdea={selectedIdea.group_id !== null}
                 eligible={
                   ideaStages.some(
                     (stage) =>

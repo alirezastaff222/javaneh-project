@@ -18,7 +18,19 @@ export async function GET(request: Request) {
   if (!ideaId) {
     return NextResponse.json({ error: "A valid idea ID is required." }, { status: 400, headers });
   }
-  const result = await getParticipantMilestoneEvaluations(supabase, ideaId);
+  const { data: idea, error: ideaError } = await supabase
+    .from("ideas")
+    .select("group_id")
+    .eq("id", ideaId)
+    .maybeSingle();
+  if (ideaError) {
+    return NextResponse.json({ error: "Milestone evaluations could not be loaded." }, { status: 500, headers });
+  }
+  const result = idea?.group_id
+    ? await supabase.rpc("group_idea_milestone_evaluations", {
+        p_idea_id: ideaId,
+      })
+    : await getParticipantMilestoneEvaluations(supabase, ideaId);
   if (result.error) {
     return NextResponse.json({ error: "Milestone evaluations could not be loaded." }, { status: 500, headers });
   }
@@ -54,7 +66,22 @@ export async function POST(request: Request) {
     milestoneKey: string;
     expectedRevision: number;
   };
-  const result = await submitMilestoneForValidation(supabase, input);
+  const { data: idea, error: ideaError } = await supabase
+    .from("ideas")
+    .select("group_id")
+    .eq("id", input.ideaId)
+    .maybeSingle();
+  if (ideaError) {
+    return NextResponse.json({ error: "Submission failed." }, { status: 500, headers });
+  }
+  const result = idea?.group_id
+    ? await supabase.rpc("submit_group_milestone_for_validation", {
+        p_idea_id: input.ideaId,
+        p_configuration_version_id: input.configurationVersionId,
+        p_milestone_key: input.milestoneKey,
+        p_expected_revision: input.expectedRevision,
+      })
+    : await submitMilestoneForValidation(supabase, input);
   if (result.error) {
     return NextResponse.json({ error: result.error.message ?? "Submission failed." }, { status: result.error.code === "42501" ? 403 : 500, headers });
   }

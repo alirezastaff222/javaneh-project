@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { isUnauthenticatedAuthError } from "@/lib/supabase/auth-errors";
 import {
   buildIdeaPortfolio,
+  titleFromStageRows,
   type HumanEvaluationStatus,
   type IdeaPortfolioItem,
 } from "./portfolio";
@@ -17,7 +18,12 @@ export type ParticipantWorkspace =
   | { kind: "unauthenticated" }
   | {
       kind: "error";
-      code: "ideas_unavailable" | "stages_unavailable" | "invalid_workspace";
+      code:
+        | "ideas_unavailable"
+        | "stages_unavailable"
+        | "evaluations_unavailable"
+        | "feedback_unavailable"
+        | "invalid_workspace";
     }
   | {
       kind: "authenticated";
@@ -55,7 +61,7 @@ export async function loadParticipantWorkspace(): Promise<ParticipantWorkspace> 
 
   const { data: ideaRows, error: ideasError } = await supabase
     .from("ideas")
-    .select("id,status,revision,current_step,submitted_at,created_at,updated_at")
+    .select("id,group_id,status,revision,current_step,submitted_at,created_at,updated_at")
     .order("updated_at", { ascending: false });
 
   if (ideasError || !Array.isArray(ideaRows)) {
@@ -74,7 +80,7 @@ export async function loadParticipantWorkspace(): Promise<ParticipantWorkspace> 
   if (ideaIds.length > 0) {
     const { data, error: stagesError } = await supabase
       .from("idea_stages")
-      .select("idea_id,stage_number,status")
+      .select("idea_id,stage_number,status,data")
       .in("idea_id", ideaIds)
       .order("stage_number", { ascending: true });
 
@@ -95,39 +101,56 @@ export async function loadParticipantWorkspace(): Promise<ParticipantWorkspace> 
   const evaluationResults = await Promise.all(
     submittedIdeas.map(async (idea) => {
       const { data, error } = await supabase.rpc(
-        "get_own_idea_evaluation_status",
+        idea.group_id ? "get_group_evaluation_status" : "get_own_idea_evaluation_status",
         { p_idea_id: idea.id },
       );
-      if (error || !isRecord(data) || data.outcome !== "available") {
+      if (error) {
+        console.error("Participant workspace evaluation query failed", {
+          code: error.code,
+          message: error.message,
+        });
+        return { kind: "error" as const, ideaId: idea.id };
+      }
+      if (!isRecord(data) || data.outcome !== "available") {
         return null;
       }
       return isHumanEvaluationStatus(data.status)
-        ? { ideaId: idea.id, status: data.status }
+        ? { kind: "available" as const, ideaId: idea.id, status: data.status }
         : null;
     }),
   );
+  if (evaluationResults.some((result) => result?.kind === "error")) {
+    return { kind: "error", code: "evaluations_unavailable" };
+  }
   const validEvaluationResults = evaluationResults.filter(
-    (result): result is NonNullable<typeof result> => result !== null,
+    (
+      result,
+    ): result is Extract<
+      NonNullable<(typeof evaluationResults)[number]>,
+      { kind: "available" }
+    > => result?.kind === "available",
   );
   if (validEvaluationResults.length !== evaluationResults.length) {
     return { kind: "error", code: "invalid_workspace" };
   }
   const evaluationStatusByIdea = new Map(
-    validEvaluationResults.map((result) => [result.ideaId, result.status]),
+    validEvaluationResults.map(({ ideaId, status }) => [ideaId, status]),
   );
   const feedbackByIdea = new Map<string, IdeaPortfolioItem["publishedFeedback"]>();
   for (const idea of submittedIdeas) {
     const { data: feedbackData, error: feedbackError } = await supabase.rpc(
-      "get_own_idea_published_feedback",
+      idea.group_id ? "get_group_published_feedback" : "get_own_idea_published_feedback",
       { p_idea_id: idea.id },
     );
     if (feedbackError) {
-      feedbackByIdea.set(idea.id, undefined);
-      continue;
+      console.error("Participant workspace feedback query failed", {
+        code: feedbackError.code,
+        message: feedbackError.message,
+      });
+      return { kind: "error", code: "feedback_unavailable" };
     }
     if (!isRecord(feedbackData)) {
-      feedbackByIdea.set(idea.id, undefined);
-      continue;
+      return { kind: "error", code: "invalid_workspace" };
     }
     if (feedbackData.outcome === "available") {
       const versionNumber = Number(feedbackData.version_number);
@@ -151,10 +174,21 @@ export async function loadParticipantWorkspace(): Promise<ParticipantWorkspace> 
         continue;
       }
     }
-    feedbackByIdea.set(idea.id, undefined);
+    if (feedbackData.outcome === "empty") {
+      feedbackByIdea.set(idea.id, undefined);
+      continue;
+    }
+    if (feedbackData.outcome !== "not_found") {
+      return { kind: "error", code: "invalid_workspace" };
+    }
+    return { kind: "error", code: "invalid_workspace" };
   }
   const ideas: IdeaPortfolioItem[] = [];
-  for (const idea of portfolio) {
+  for (const portfolioIdea of portfolio) {
+    const idea = {
+      ...portfolioIdea,
+      title: titleFromStageRows(stageRows, portfolioIdea.id),
+    };
     if (idea.status !== "submitted") {
       ideas.push(idea);
       continue;

@@ -4,8 +4,10 @@ import {
   buildIdeaPortfolio,
   canCreateIdea,
   getAvailableIdeaSlots,
+  getIdeaCountForScope,
   IDEA_QUOTA_LIMIT,
   isIdeaPortfolioItem,
+  titleFromStageRows,
   type IdeaStatus,
 } from "./portfolio";
 
@@ -75,6 +77,29 @@ test("keeps an empty portfolio valid and all three quota slots available", () =>
   assert.equal(IDEA_QUOTA_LIMIT - portfolio!.length, 3);
   assert.equal(getAvailableIdeaSlots(portfolio!.length, true), 3);
   assert.equal(canCreateIdea(portfolio!.length, true, false), true);
+});
+
+test("derives a concise idea title from saved Stage 1 content", () => {
+  assert.equal(
+    titleFromStageRows(
+      [
+        {
+          idea_id: "idea-a",
+          stage_number: 1,
+          data: { content: "  Safer streets\nA longer problem description" },
+        },
+      ],
+      "idea-a",
+    ),
+    "Safer streets",
+  );
+  assert.equal(
+    titleFromStageRows(
+      [{ idea_id: "idea-a", stage_number: 2, data: { content: "Other" } }],
+      "idea-a",
+    ),
+    undefined,
+  );
 });
 
 test("reports confirmation and revision as the next required action", () => {
@@ -191,4 +216,20 @@ test("failed refresh cannot release a displayed slot, while refreshed deletion c
 
   assert.equal(getAvailableIdeaSlots(fullQuotaCount, false), null);
   assert.equal(getAvailableIdeaSlots(fullQuotaCount - 1, true), 1);
+});
+
+test("individual and group ideas consume separate three-idea quotas", () => {
+  const portfolio = [
+    { group_id: null },
+    { group_id: null },
+    { group_id: "group-a" },
+    { group_id: "group-a" },
+    { group_id: "group-b" },
+  ];
+
+  assert.equal(getIdeaCountForScope(portfolio, null), 2);
+  assert.equal(getIdeaCountForScope(portfolio, "group-a"), 2);
+  assert.equal(getIdeaCountForScope(portfolio, "group-b"), 1);
+  assert.equal(getAvailableIdeaSlots(getIdeaCountForScope(portfolio, null), true), 1);
+  assert.equal(getAvailableIdeaSlots(getIdeaCountForScope(portfolio, "group-a"), true), 1);
 });

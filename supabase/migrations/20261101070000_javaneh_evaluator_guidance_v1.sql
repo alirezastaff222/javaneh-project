@@ -643,6 +643,18 @@ BEGIN
   );
 END
 $function$;
+DO $executor_create_check$
+BEGIN
+  IF pg_catalog.has_schema_privilege(
+       'javaneh_identity_executor', 'public', 'CREATE'
+     ) THEN
+    RAISE EXCEPTION
+      'javaneh_identity_executor already has CREATE on public; refusing temporary privilege window'
+      USING ERRCODE = '42501';
+  END IF;
+END
+$executor_create_check$;
+GRANT CREATE ON SCHEMA public TO javaneh_identity_executor;
 ALTER FUNCTION public.scoring_configuration_is_ready(uuid)
   OWNER TO javaneh_identity_executor;
 REVOKE ALL ON FUNCTION public.scoring_configuration_is_ready(uuid)
@@ -928,18 +940,6 @@ BEGIN
     AND milestone.catalog_status IN ('approved', 'active');
 END
 $function$;
-DO $executor_create_check$
-BEGIN
-  IF pg_catalog.has_schema_privilege(
-       'javaneh_identity_executor', 'public', 'CREATE'
-     ) THEN
-    RAISE EXCEPTION
-      'javaneh_identity_executor already has CREATE on public; refusing temporary privilege window'
-      USING ERRCODE = '42501';
-  END IF;
-END
-$executor_create_check$;
-GRANT CREATE ON SCHEMA public TO javaneh_identity_executor;
 ALTER FUNCTION public.get_milestone_evaluation_guide(uuid, text)
   OWNER TO javaneh_identity_executor;
 REVOKE CREATE ON SCHEMA public FROM javaneh_identity_executor;

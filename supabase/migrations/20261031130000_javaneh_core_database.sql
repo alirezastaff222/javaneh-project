@@ -47,13 +47,13 @@ BEGIN
   END IF;
 
   IF NOT pg_catalog.has_schema_privilege(
-       'javaneh_identity_bridge', 'auth', 'USAGE'
+       'postgres', 'auth', 'USAGE'
      )
      OR NOT pg_catalog.has_function_privilege(
-       'javaneh_identity_bridge', 'auth.uid()', 'EXECUTE'
+       'postgres', 'auth.uid()', 'EXECUTE'
      ) THEN
     RAISE EXCEPTION
-      'The identity bridge lacks required auth.uid privileges; run the documented supabase_admin prerequisite'
+      'postgres lacks the Auth privileges required by the narrow identity wrapper; run the documented prerequisite'
       USING ERRCODE = '42501';
   END IF;
 
@@ -100,7 +100,9 @@ GRANT USAGE ON SCHEMA javaneh_private
 GRANT USAGE ON SCHEMA public TO authenticated, javaneh_identity_executor;
 GRANT CREATE ON SCHEMA public TO javaneh_identity_executor;
 
-CREATE FUNCTION javaneh_private.current_uid()
+SET ROLE javaneh_identity_bridge;
+
+CREATE FUNCTION javaneh_private.auth_uid()
 RETURNS uuid
 LANGUAGE sql
 STABLE
@@ -110,10 +112,30 @@ AS $function$
   SELECT auth.uid()
 $function$;
 
+CREATE FUNCTION javaneh_private.current_uid()
+RETURNS uuid
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $function$
+  SELECT javaneh_private.auth_uid()
+$function$;
+
+RESET ROLE;
+
+ALTER FUNCTION javaneh_private.auth_uid() OWNER TO postgres;
 ALTER FUNCTION javaneh_private.current_uid() OWNER TO javaneh_identity_bridge;
-REVOKE ALL ON FUNCTION javaneh_private.current_uid() FROM PUBLIC, anon, service_role;
+REVOKE ALL ON FUNCTION javaneh_private.auth_uid()
+  FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION javaneh_private.auth_uid()
+  TO javaneh_identity_bridge;
+SET ROLE javaneh_identity_bridge;
+REVOKE ALL ON FUNCTION javaneh_private.current_uid()
+  FROM PUBLIC, anon, service_role;
 GRANT EXECUTE ON FUNCTION javaneh_private.current_uid()
   TO authenticated, javaneh_identity_executor;
+RESET ROLE;
 
 CREATE TABLE public.ideas (
   id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),

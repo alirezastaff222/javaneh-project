@@ -230,6 +230,18 @@ BEGIN
   );
 END
 $function$;
+DO $executor_create_check$
+BEGIN
+  IF pg_catalog.has_schema_privilege(
+       'javaneh_identity_executor', 'public', 'CREATE'
+     ) THEN
+    RAISE EXCEPTION
+      'javaneh_identity_executor already has CREATE on public; refusing temporary privilege window'
+      USING ERRCODE = '42501';
+  END IF;
+END
+$executor_create_check$;
+GRANT CREATE ON SCHEMA public TO javaneh_identity_executor;
 ALTER FUNCTION public.complete_idea_classification(
   uuid, uuid, text, text, text[], integer, integer[], jsonb, numeric,
   text, text, uuid, uuid
@@ -310,18 +322,6 @@ BEGIN
   RETURN v_inserted_count;
 END
 $function$;
-DO $executor_create_check$
-BEGIN
-  IF pg_catalog.has_schema_privilege(
-       'javaneh_identity_executor', 'public', 'CREATE'
-     ) THEN
-    RAISE EXCEPTION
-      'javaneh_identity_executor already has CREATE on public; refusing temporary privilege window'
-      USING ERRCODE = '42501';
-  END IF;
-END
-$executor_create_check$;
-GRANT CREATE ON SCHEMA public TO javaneh_identity_executor;
 ALTER FUNCTION public.backfill_phase7_classification_state()
   OWNER TO javaneh_identity_executor;
 REVOKE CREATE ON SCHEMA public FROM javaneh_identity_executor;

@@ -41,12 +41,17 @@ export default function AuthForm({
                 emailRedirectTo: buildConfirmationRedirect(
                   window.location.origin,
                   returnTo,
+                  process.env.NEXT_PUBLIC_SITE_URL,
                 ),
               },
             })
           : await supabase.auth.signInWithPassword({ email, password });
-    } catch {
+    } catch (error) {
       setBusy(false);
+      if (error instanceof Error && error.message.includes("NEXT_PUBLIC_SITE_URL")) {
+        setError("نشانی سایت برای پیوند تأیید ایمیل به‌درستی پیکربندی نشده است.");
+        return;
+      }
       setError("ارتباط با سرویس ورود برقرار نشد. دوباره تلاش کنید.");
       return;
     }

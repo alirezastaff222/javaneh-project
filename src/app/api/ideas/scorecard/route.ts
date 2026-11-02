@@ -20,8 +20,16 @@ export async function GET(request: Request) {
       return user ? { context: supabase } : null;
     },
     fetchScorecard: async (ideaId, supabase) => {
+      const { data: idea, error: ideaError } = await supabase
+        .from("ideas")
+        .select("group_id")
+        .eq("id", ideaId)
+        .maybeSingle();
+      if (ideaError) throw ideaError;
       const { data, error } = await supabase.rpc(
-        "get_participant_idea_scorecard",
+        idea?.group_id
+          ? "get_group_idea_scorecard"
+          : "get_participant_idea_scorecard",
         { p_idea_id: ideaId },
       );
       if (error) throw error;

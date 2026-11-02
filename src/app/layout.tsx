@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "جوانه | بستر توسعه نوآوری اجتماعی",
-  description: "بستر مشارکت، توسعه و پرورش ایده‌های نوآوری اجتماعی.",
+  title: "Javaneh | Social Innovation Platform",
+  description: "Turn social challenges into thoughtful, workable ideas for your community.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

@@ -122,15 +122,19 @@ export function MilestoneScoreSummary({
 
 export default function ParticipantScorecard({
   ideaId,
+  isGroupIdea = false,
 }: {
   ideaId: string;
+  isGroupIdea?: boolean;
 }) {
   const [state, setState] = useState<ScorecardState>({ kind: "loading" });
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let active = true;
 
     async function load() {
+      setState({ kind: "loading" });
       try {
         const parameters = new URLSearchParams({ ideaId });
         const response = await fetch(
@@ -161,7 +165,7 @@ export default function ParticipantScorecard({
       active = false;
       window.removeEventListener("participant-scorecard-refresh", refresh);
     };
-  }, [ideaId]);
+  }, [attempt, ideaId]);
 
   return (
     <section
@@ -171,10 +175,14 @@ export default function ParticipantScorecard({
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h3 id="participant-scorecard-title" className="font-semibold">
-            کارنامه توسعه ایده
+            {isGroupIdea ? "کارنامه امتیاز گروه" : "کارنامه توسعه ایده"}
           </h3>
           <p className="mt-1 text-sm text-foreground/60">
             فقط امتیازهای ثبت‌شده در دفتر رسمی محاسبه می‌شوند.
+            {isGroupIdea
+              ? " این امتیازها متعلق به گروه است و به حساب اعضا جداگانه اضافه نمی‌شود."
+              : " امتیاز توسعه بخشی از ارزیابی نهایی است."}{" "}
+            نتیجه نهایی پس از انتشار رسمی جداگانه نمایش داده می‌شود.
           </p>
         </div>
         {state.kind === "loaded" && state.scorecard.state === "available" && (
@@ -190,9 +198,16 @@ export default function ParticipantScorecard({
           در حال بارگذاری کارنامه…
         </p>
       ) : state.kind === "error" ? (
-        <p role="alert" className="mt-4 text-sm text-red-800 dark:text-red-200">
-          کارنامه بارگذاری نشد. صفحه را تازه‌سازی کنید.
-        </p>
+        <div className="mt-4 flex flex-wrap items-center gap-3 text-sm text-red-800 dark:text-red-200">
+          <p role="alert">کارنامه بارگذاری نشد.</p>
+          <button
+            type="button"
+            onClick={() => setAttempt((value) => value + 1)}
+            className="min-h-9 rounded-lg border border-current px-3 font-medium"
+          >
+            تلاش دوباره
+          </button>
+        </div>
       ) : state.scorecard.state === "unavailable" ? (
         <p role="status" className="mt-4 text-sm leading-6 text-foreground/70">
           {unavailableMessage(state.scorecard.reason)}
@@ -307,5 +322,74 @@ export default function ParticipantScorecard({
         </>
       )}
     </section>
+  );
+}
+
+export function ParticipantScorecardSummary({
+  ideaId,
+  isGroupIdea = false,
+}: {
+  ideaId: string;
+  isGroupIdea?: boolean;
+}) {
+  const [state, setState] = useState<ScorecardState>({ kind: "loading" });
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    async function load() {
+      setState({ kind: "loading" });
+      try {
+        const response = await fetch(
+          `/api/ideas/scorecard?ideaId=${encodeURIComponent(ideaId)}`,
+          { method: "GET", cache: "no-store" },
+        );
+        if (!response.ok) throw new Error("Scorecard request failed.");
+        const payload: unknown = await response.json();
+        const scorecard =
+          typeof payload === "object" &&
+          payload !== null &&
+          !Array.isArray(payload) &&
+          "scorecard" in payload
+            ? parseParticipantScorecard(payload.scorecard)
+            : null;
+        if (!scorecard) throw new Error("Invalid scorecard response.");
+        if (active) setState({ kind: "loaded", scorecard });
+      } catch {
+        if (active) setState({ kind: "error" });
+      }
+    }
+    void load();
+    return () => {
+      active = false;
+    };
+  }, [attempt, ideaId]);
+
+  return (
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-foreground/10 pt-4 text-sm">
+      <span className="text-foreground/60">
+        {isGroupIdea ? "امتیازهای ثبت‌شده برای گروه" : "امتیازهای ثبت‌شده در کارنامه رسمی"}
+      </span>
+      {state.kind === "loading" ? (
+        <span role="status" className="text-foreground/55">در حال بارگذاری…</span>
+      ) : state.kind === "error" ? (
+        <span className="flex items-center gap-3">
+          <span role="alert" className="text-red-700 dark:text-red-300">بارگذاری امتیازها ناموفق بود.</span>
+          <button
+            type="button"
+            onClick={() => setAttempt((value) => value + 1)}
+            className="min-h-9 rounded-lg border border-foreground/20 px-3 text-xs font-medium hover:bg-foreground/5"
+          >
+            تلاش دوباره
+          </button>
+        </span>
+      ) : state.scorecard.state === "unavailable" ? (
+        <span role="status" className="text-foreground/60">کارنامه امتیازدهی در دسترس نیست.</span>
+      ) : (
+        <span className="font-semibold tabular-nums">
+          {state.scorecard.total_points} / {state.scorecard.maximum_points}
+        </span>
+      )}
+    </div>
   );
 }

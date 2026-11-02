@@ -139,6 +139,22 @@ BEGIN
     RAISE EXCEPTION 'Identity bridge ownership or execution grants are unsafe';
   END IF;
 
+  IF pg_catalog.pg_get_userbyid((
+       SELECT p.proowner
+       FROM pg_catalog.pg_proc AS p
+       JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+       WHERE n.nspname = 'javaneh_private'
+         AND p.proname = 'auth_uid'
+     )) <> 'postgres'
+     OR pg_catalog.has_function_privilege(
+       'anon', 'javaneh_private.auth_uid()', 'EXECUTE'
+     )
+     OR pg_catalog.has_function_privilege(
+       'authenticated', 'javaneh_private.auth_uid()', 'EXECUTE'
+     ) THEN
+    RAISE EXCEPTION 'The narrow Auth identity wrapper is not restricted';
+  END IF;
+
   IF EXISTS (
     SELECT 1
       FROM pg_catalog.pg_class AS c
@@ -305,6 +321,9 @@ DECLARE
   v_failed boolean;
 BEGIN
   PERFORM pg_catalog.set_config('request.jwt.claim.sub', v_owner_a::text, true);
+  IF javaneh_private.current_uid() IS DISTINCT FROM v_owner_a THEN
+    RAISE EXCEPTION 'Identity bridge did not return the authenticated user ID';
+  END IF;
 
   PERFORM pg_catalog.set_config('m7r2.fail_create', 'on', true);
   v_failed := false;

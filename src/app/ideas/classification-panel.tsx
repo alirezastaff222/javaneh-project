@@ -78,6 +78,7 @@ const axesSchema = z
 type Props = {
   supabase: SupabaseClient;
   ideaId: string;
+  isGroupIdea: boolean;
   eligible: boolean;
   triggerVersion: number;
 };
@@ -93,6 +94,7 @@ type DisplayAxis = {
 export default function ClassificationPanel({
   supabase,
   ideaId,
+  isGroupIdea,
   eligible,
   triggerVersion,
 }: Props) {
@@ -112,7 +114,9 @@ export default function ClassificationPanel({
   const loadClassification = useCallback(async () => {
     const requestVersion = ++loadVersion.current;
     const { data: projection, error: stateError } = await supabase.rpc(
-      "get_own_idea_classification_status",
+      isGroupIdea
+        ? "get_group_idea_classification_status"
+        : "get_own_idea_classification_status",
       { p_idea_id: ideaId },
     );
     if (requestVersion !== loadVersion.current) return;
@@ -230,7 +234,7 @@ export default function ClassificationPanel({
       return;
     }
     setAxes(displayAxes);
-  }, [eligible, ideaId, supabase]);
+  }, [eligible, ideaId, isGroupIdea, supabase]);
 
   useEffect(() => {
     loadClassificationRef.current = loadClassification;

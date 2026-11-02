@@ -24,3 +24,39 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+.home-shell {
+  font-family: var(--font-geist-sans), sans-serif;
+  background:
+    radial-gradient(ellipse at 82% 18%, rgb(213 224 216 / 45%), transparent 34%),
+    radial-gradient(ellipse at 16% 86%, rgb(237 222 208 / 38%), transparent 32%),
+    #f7f8f6;
+}
+
+.home-mark {
+  display: grid;
+  width: 2.25rem;
+  aspect-ratio: 1;
+  place-items: center;
+  border: 1px solid rgb(255 255 255 / 90%);
+  border-radius: 0.8rem;
+  background: linear-gradient(145deg, #fff, #e5eee8);
+  box-shadow: 0 4px 14px rgb(34 65 51 / 10%);
+  color: #2e5a48;
+  font-family: Georgia, serif;
+  font-size: 1.2rem;
+}
+
+.home-glass {
+  border: 1px solid rgb(255 255 255 / 88%);
+  background: rgb(255 255 255 / 54%);
+  box-shadow: 0 22px 60px rgb(41 66 54 / 9%), inset 0 1px rgb(255 255 255 / 90%);
+  backdrop-filter: blur(24px);
+}
+
+.home-journey {
+  border: 1px solid rgb(255 255 255 / 90%);
+  background: rgb(255 255 255 / 47%);
+  box-shadow: 0 28px 80px rgb(41 66 54 / 10%), inset 0 1px rgb(255 255 255 / 95%);
+  backdrop-filter: blur(28px);
+}

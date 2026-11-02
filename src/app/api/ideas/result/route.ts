@@ -10,7 +10,15 @@ export async function GET(request: Request) {
   if (error || !user) return NextResponse.json({ error: "Authentication required." }, { status: 401 });
   const ideaId = new URL(request.url).searchParams.get("ideaId");
   if (!ideaId) return NextResponse.json({ error: "A valid idea ID is required." }, { status: 400 });
-  const { data, error: rpcError } = await supabase.rpc("get_participant_published_result", {
+  const { data: idea, error: ideaError } = await supabase
+    .from("ideas")
+    .select("group_id")
+    .eq("id", ideaId)
+    .maybeSingle();
+  if (ideaError) return NextResponse.json({ error: "The final result could not be loaded." }, { status: 500 });
+  const { data, error: rpcError } = await supabase.rpc(idea?.group_id
+    ? "get_group_published_result"
+    : "get_participant_published_result", {
     p_idea_id: ideaId,
   });
   if (rpcError) return NextResponse.json({ error: "The final result could not be loaded." }, { status: 500 });

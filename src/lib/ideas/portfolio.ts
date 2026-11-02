@@ -1,5 +1,12 @@
 export const IDEA_QUOTA_LIMIT = 3;
 
+export function getIdeaCountForScope(
+  ideas: Pick<IdeaPortfolioItem, "group_id">[],
+  groupId: string | null,
+): number {
+  return ideas.filter((idea) => idea.group_id === groupId).length;
+}
+
 export function getAvailableIdeaSlots(
   ideaCount: number,
   portfolioLoaded: boolean,
@@ -48,6 +55,8 @@ export type PublishedFeedback = {
 
 export type IdeaPortfolioItem = {
   id: string;
+  group_id: string | null;
+  title?: string;
   status: IdeaStatus;
   revision: number;
   current_step: number;
@@ -60,6 +69,27 @@ export type IdeaPortfolioItem = {
   evaluationStatus?: HumanEvaluationStatus;
   publishedFeedback?: PublishedFeedback;
 };
+
+export function titleFromStageRows(
+  stageRows: unknown[],
+  ideaId: string,
+): string | undefined {
+  const stage = stageRows.find(
+    (row) =>
+      isRecord(row) &&
+      row.idea_id === ideaId &&
+      row.stage_number === 1 &&
+      isRecord(row.data) &&
+      typeof row.data.content === "string",
+  );
+  if (!isRecord(stage) || !isRecord(stage.data)) return undefined;
+  const firstLine = (stage.data.content as string)
+    .trim()
+    .split(/\r?\n/, 1)[0]
+    .trim();
+  if (!firstLine) return undefined;
+  return firstLine.length > 72 ? `${firstLine.slice(0, 69).trimEnd()}...` : firstLine;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -141,6 +171,9 @@ export function buildIdeaPortfolio(
     if (
       !isRecord(row) ||
       typeof row.id !== "string" ||
+      (row.group_id !== undefined &&
+        row.group_id !== null &&
+        typeof row.group_id !== "string") ||
       !isIdeaStatus(row.status) ||
       !Number.isInteger(row.revision) ||
       Number(row.revision) < 1 ||
@@ -180,6 +213,7 @@ export function buildIdeaPortfolio(
 
     result.push({
       id: row.id,
+      group_id: typeof row.group_id === "string" ? row.group_id : null,
       status: row.status,
       revision: Number(row.revision),
       current_step: Number(row.current_step),
@@ -203,6 +237,8 @@ export function isIdeaPortfolioItem(value: unknown): value is IdeaPortfolioItem 
   return (
     isRecord(value) &&
     typeof value.id === "string" &&
+    (value.group_id === null || typeof value.group_id === "string") &&
+    (value.title === undefined || typeof value.title === "string") &&
     isIdeaStatus(value.status) &&
     Number.isInteger(value.revision) &&
     Number(value.revision) > 0 &&
