@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { createSupabaseMentorCircuitBreaker } from "@/lib/ai/mentor/circuit-breaker";
 import { classifyIdea, createSupabaseClassificationPersistence } from "@/lib/ai/mentor/classification-service";
-import { createGatewayMentorProvider } from "@/lib/ai/mentor/provider";
+import { createGoogleMentorProvider } from "@/lib/ai/mentor/provider";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 
@@ -153,7 +153,7 @@ export async function POST(request: NextRequest) {
       },
       {
         persistence: createSupabaseClassificationPersistence(admin),
-        provider: createGatewayMentorProvider(),
+        provider: createGoogleMentorProvider(),
         circuit: createSupabaseMentorCircuitBreaker(createAdminClient),
       },
     );

@@ -244,7 +244,7 @@ export async function getMentorAvailability(
     console.info(
       JSON.stringify({
         event: "mentor.availability",
-        provider: "vercel-ai-gateway",
+        provider: "google.generative-ai",
         status:
           providerError.category === "not_configured" ||
           providerError.category === "authentication"
@@ -337,7 +337,7 @@ function recordOperation(
   console.info(
     JSON.stringify({
       event: "mentor.request",
-      provider: "vercel-ai-gateway",
+      provider: "google.generative-ai",
       promptVersion: MENTOR_PROMPT_VERSION,
       status,
       ...metadata,
@@ -421,7 +421,7 @@ export async function createMentorResponse(
       console.info(
         JSON.stringify({
           event: "mentor.fallback",
-          provider: "vercel-ai-gateway",
+          provider: "google.generative-ai",
           errorCategory: serviceError.code,
           correlationId,
         }),
@@ -733,7 +733,7 @@ export async function createMentorResponse(
     ok: true as const,
     suggestion,
     metadata: {
-      provider: "vercel-ai-gateway" as const,
+      provider: "google.generative-ai" as const,
       model: result.model,
       promptVersion: MENTOR_PROMPT_VERSION,
       latencyMs: Math.max(0, (dependencies.now ?? Date.now)() - startedAt),

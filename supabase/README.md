@@ -1,13 +1,47 @@
 # Javaneh core database
 
 The core schema is installed by the ordered SQL migrations in `migrations/`.
-The local Supabase migration role is `postgres`; in the current local stack it
-cannot grant privileges on `auth` or create a trigger on `auth.users`.
+Hosted Supabase and local/test databases use different prerequisite paths.
 
-Before applying the migration for the first time, run
-`operations/identity-bridge-prerequisite.sql` in the target local/test database
-after connecting directly as `supabase_admin` (not through `SET ROLE`). This
-one-time provisioning step:
+## Hosted Supabase readiness
+
+The confirmed hosted SQL Editor session runs directly as `postgres`, which has
+`CREATEROLE`, effective `REFERENCES` and `TRIGGER` on `auth.users`, and effective
+`CREATE` on `public`. The `auth.users` owner is `supabase_auth_admin`.
+The prerequisite therefore does not attempt to re-grant the hosted migration
+session's effective Auth privileges. Effective privileges do not establish
+grant options.
+
+Before any hosted migration run, execute
+`operations/identity-bridge-prerequisite.sql` directly as `postgres`. It
+creates/restricts the two dedicated NOLOGIN roles and checks that the bridge
+and executor already have the required effective access to `auth.uid()` and
+`extensions.digest(bytea,text)`. It does not attempt to grant those privileges
+in hosted mode. The supplied hosted facts do not establish whether those
+privileges come from `PUBLIC` or another existing grant for the internal roles;
+the prerequisite check must pass before continuing.
+
+The migration chain is **not yet cleared for a hosted run**. Many migrations
+temporarily grant `CREATE` on `public` to `javaneh_identity_executor` to
+transfer narrowly scoped function ownership, then revoke it. The hosted facts
+confirm only effective `CREATE` for `postgres`, not that it owns `public` or
+has the grant option needed for those grants. Verify the schema owner or
+`CREATE` grant option for `postgres` before running migrations. Do not solve a
+failed check by granting broad privileges or changing function owners.
+
+The hosted prerequisite also checks effective `REFERENCES` and `TRIGGER` on
+`auth.users` and `CREATE` on `public` for `postgres`; these are confirmed by
+the reported hosted results. The core migration retains its Auth foreign keys
+and Auth deletion-audit trigger.
+
+## Local and dedicated test setup
+
+In the current local stack, the migration role `postgres` cannot grant
+privileges on `auth` or create a trigger on `auth.users`. Before applying the
+migration for the first time, run
+`operations/identity-bridge-prerequisite.sql` directly as `supabase_admin`
+(not through `SET ROLE`) in an isolated local/test database. This one-time
+provisioning step:
 
 - creates only `javaneh_identity_bridge` and `javaneh_identity_executor`,
   with the approved restricted role attributes;
@@ -15,21 +49,18 @@ one-time provisioning step:
   can set function/schema ownership during migrations;
 - grants the bridge role only `USAGE` on `auth` and `EXECUTE` on
   `auth.uid()`; and
-- grants `postgres` only `REFERENCES` on `auth.users`, needed by the owner
-  foreign key, and grants the executor `USAGE` on `extensions` plus
-  `EXECUTE` on SHA-256; and
-- grants `postgres` only the public-schema object-creation and
-  `auth.users` trigger privileges required by the migration.
+- provisions the Auth, extension, public-schema, and trigger privileges needed
+  by the local migration role.
 
 Neither client role is granted membership in an internal role. Do not grant
 these roles to `anon`, `authenticated`, `service_role`, or `authenticator`.
 The migration checks each prerequisite and fails rather than weakening the
 design. The internal roles are never function fallbacks or table owners.
 
-Use only an isolated local or dedicated test Supabase project for applying
-and testing this schema. Do not apply it to production. Keep the private
-schema out of the PostgREST exposed-schema list; the repository's local
-configuration exposes only `public`.
+Use only an isolated local or dedicated test Supabase project for local/test
+application and testing. Keep the private schema out of the PostgREST
+exposed-schema list; the repository's local configuration exposes only
+`public`.
 The migration wraps all schema, privilege, and trigger changes in one
 transaction and is intentionally a one-time migration: Supabase migration
 history, rather than `IF NOT EXISTS`, prevents accidental reapplication.

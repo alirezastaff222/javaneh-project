@@ -459,7 +459,7 @@ test("a successful classification validates output and persists a current result
     persistence,
     circuit,
     provider: {
-      circuitKey: () => "vercel-ai-gateway:test/model",
+      circuitKey: () => "google.generative-ai:test/model",
       generate: async () => ({
         output: output(),
         model: "test/model",
@@ -499,7 +499,7 @@ test("provider outages are bounded, persisted as retryable failures, and use the
     persistence,
     circuit,
     provider: {
-      circuitKey: () => "vercel-ai-gateway:test/model",
+      circuitKey: () => "google.generative-ai:test/model",
       generate: async () => {
         calls += 1;
         throw new MentorProviderError("unavailable", true);

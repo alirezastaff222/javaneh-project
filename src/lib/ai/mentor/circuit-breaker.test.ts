@@ -168,7 +168,7 @@ test("three transient failures open the circuit and requests are blocked through
   let time = 10_000;
   const shared = sharedCircuit(() => time);
   const circuit = shared.circuit();
-  const model = "vercel-ai-gateway:test/model";
+  const model = "google.generative-ai:test/model";
 
   for (let index = 0; index < 3; index += 1) {
     const admission = await circuit.admit(model);
@@ -191,7 +191,7 @@ test("successful recovery closes the circuit; transient probe failure reopens wi
   let time = 1_000;
   const shared = sharedCircuit(() => time);
   const circuit = shared.circuit();
-  const model = "vercel-ai-gateway:test/model";
+  const model = "google.generative-ai:test/model";
   for (let index = 0; index < 3; index += 1) {
     const admission = await circuit.admit(model);
     await circuit.record(model, admission, transientFailure, randomUUID());
@@ -220,7 +220,7 @@ test("independent service instances share one half-open probe admission", async 
   const shared = sharedCircuit(() => time);
   const firstInstance = shared.circuit();
   const secondInstance = shared.circuit();
-  const model = "vercel-ai-gateway:test/model";
+  const model = "google.generative-ai:test/model";
   for (let index = 0; index < 3; index += 1) {
     const admission = await firstInstance.admit(model);
     await firstInstance.record(model, admission, transientFailure, randomUUID());
@@ -239,7 +239,7 @@ test("a stale recovery lease expires safely without admitting another concurrent
   let time = 20_000;
   const shared = sharedCircuit(() => time);
   const circuit = shared.circuit();
-  const model = "vercel-ai-gateway:test/model";
+  const model = "google.generative-ai:test/model";
   for (let index = 0; index < 3; index += 1) {
     const admission = await circuit.admit(model);
     await circuit.record(model, admission, transientFailure, randomUUID());

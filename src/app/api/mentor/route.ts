@@ -3,7 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { createSupabaseMentorCircuitBreaker } from "@/lib/ai/mentor/circuit-breaker";
 import { createSupabaseMentorRequestControls } from "@/lib/ai/mentor/controls";
-import { createGatewayMentorProvider } from "@/lib/ai/mentor/provider";
+import { createGoogleMentorProvider } from "@/lib/ai/mentor/provider";
 import {
   createMentorAvailabilityHandler,
   createMentorPostHandler,
@@ -24,7 +24,7 @@ const handleAvailability = createMentorAvailabilityHandler({
     return { participantId: data.user.id, context: supabase };
   },
   async getAvailability() {
-    return getMentorAvailability(createGatewayMentorProvider(), createCircuitBreaker());
+    return getMentorAvailability(createGoogleMentorProvider(), createCircuitBreaker());
   },
 });
 
@@ -39,7 +39,7 @@ const handleMentorPost = createMentorPostHandler({
     return createMentorResponse(request, { id: participantId }, {
       data: createSupabaseMentorDataSource(supabase),
       controls: createSupabaseMentorRequestControls(supabase),
-      provider: createGatewayMentorProvider(),
+      provider: createGoogleMentorProvider(),
       circuit: createCircuitBreaker(),
     });
   },

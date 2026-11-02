@@ -71,7 +71,7 @@ function dependencies(
     provider: {
       generate: async (): Promise<MentorGenerationResult> => ({
         output: generated,
-        model: "anthropic/claude-haiku-4.5",
+        model: "gemini-3.8-flash",
         inputTokens: 120,
         outputTokens: 36,
       }),
@@ -150,15 +150,15 @@ test("request schema rejects extra fields and oversized/empty messages", () => {
   );
 });
 
-test("missing Gateway auth is reported without requiring a live provider call", () => {
+test("Google API configuration is detected without requiring a live provider call", () => {
   assert.deepEqual(
-    getMentorModelConfiguration({ AI_MENTOR_MODEL: "anthropic/claude-haiku-4.5" }),
-    { model: "anthropic/claude-haiku-4.5", configured: false },
+    getMentorModelConfiguration({ AI_MENTOR_MODEL: "gemini-3.8-flash" }),
+    { model: "gemini-3.8-flash", configured: false },
   );
   assert.equal(
     getMentorModelConfiguration({
-      AI_GATEWAY_API_KEY: "test-key",
-      AI_MENTOR_MODEL: "anthropic/claude-haiku-4.5",
+      GOOGLE_GENERATIVE_AI_API_KEY: "test-key",
+      AI_MENTOR_MODEL: "gemini-3.8-flash",
     }).configured,
     true,
   );
@@ -176,7 +176,7 @@ test("provider input is capped by a UTF-8 byte budget", () => {
 test("runtime invalid model and provider config errors are treated as configuration failures", () => {
   let error = normalizeProviderError({
     status: 404,
-    message: "Model not found: anthropic/claude-haiku-4.5",
+    message: "Model not found: gemini-3.8-flash",
   });
   assert.equal(error.category, "not_configured");
   assert.equal(error.retryable, false);
@@ -443,7 +443,7 @@ test("retryable timeouts retry once; provider rate limits and outages are classi
         }),
       },
       provider: {
-        circuitKey: () => "vercel-ai-gateway:test/model",
+        circuitKey: () => "google.generative-ai:test/model",
         probe: async (input) => {
           probeCalls += 1;
           assert.ok(input.signal instanceof AbortSignal);

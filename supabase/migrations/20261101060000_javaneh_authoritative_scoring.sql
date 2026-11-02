@@ -23,6 +23,18 @@ BEGIN
 END
 $prerequisite_check$;
 
+DO $executor_create_check$
+BEGIN
+  IF pg_catalog.has_schema_privilege(
+       'javaneh_identity_executor', 'public', 'CREATE'
+     ) THEN
+    RAISE EXCEPTION
+      'javaneh_identity_executor already has CREATE on public; refusing temporary privilege window'
+      USING ERRCODE = '42501';
+  END IF;
+END
+$executor_create_check$;
+
 ALTER TABLE public.official_points_ledger
   ADD COLUMN competition_id uuid
     REFERENCES public.competitions(id) ON DELETE RESTRICT,
@@ -84,8 +96,10 @@ AS $function$
   WHERE milestone.configuration_version_id = p_configuration_version_id
     AND milestone.milestone_key = p_milestone_key
 $function$;
+GRANT CREATE ON SCHEMA public TO javaneh_identity_executor;
 ALTER FUNCTION public.calculate_scoring_milestone_points(uuid, text, smallint)
   OWNER TO javaneh_identity_executor;
+REVOKE CREATE ON SCHEMA public FROM javaneh_identity_executor;
 REVOKE ALL ON FUNCTION public.calculate_scoring_milestone_points(uuid, text, smallint)
   FROM PUBLIC, anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.calculate_scoring_milestone_points(uuid, text, smallint)
@@ -688,8 +702,10 @@ BEGIN
   );
 END
 $function$;
+GRANT CREATE ON SCHEMA public TO javaneh_identity_executor;
 ALTER FUNCTION public.award_validated_milestone(uuid)
   OWNER TO javaneh_identity_executor;
+REVOKE CREATE ON SCHEMA public FROM javaneh_identity_executor;
 REVOKE ALL ON FUNCTION public.award_validated_milestone(uuid)
   FROM PUBLIC, anon, service_role;
 GRANT EXECUTE ON FUNCTION public.award_validated_milestone(uuid)
@@ -795,8 +811,10 @@ BEGIN
   );
 END
 $function$;
+GRANT CREATE ON SCHEMA public TO javaneh_identity_executor;
 ALTER FUNCTION public.correct_score_award(uuid, text)
   OWNER TO javaneh_identity_executor;
+REVOKE CREATE ON SCHEMA public FROM javaneh_identity_executor;
 REVOKE ALL ON FUNCTION public.correct_score_award(uuid, text)
   FROM PUBLIC, anon, service_role;
 GRANT EXECUTE ON FUNCTION public.correct_score_award(uuid, text)

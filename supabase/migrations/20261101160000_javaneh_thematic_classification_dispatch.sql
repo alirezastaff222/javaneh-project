@@ -1,5 +1,17 @@
 BEGIN;
 
+DO $executor_create_check$
+BEGIN
+  IF pg_catalog.has_schema_privilege(
+       'javaneh_identity_executor', 'public', 'CREATE'
+     ) THEN
+    RAISE EXCEPTION
+      'javaneh_identity_executor already has CREATE on public; refusing temporary privilege window'
+      USING ERRCODE = '42501';
+  END IF;
+END
+$executor_create_check$;
+
 ALTER TABLE public.idea_classification_state
   ADD COLUMN IF NOT EXISTS attempt_count smallint NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS retry_after timestamptz;
@@ -141,8 +153,10 @@ BEGIN
   RETURN NEW;
 END
 $function$;
+GRANT CREATE ON SCHEMA public TO javaneh_identity_executor;
 ALTER FUNCTION public.mark_idea_classification_stale()
   OWNER TO javaneh_identity_executor;
+REVOKE CREATE ON SCHEMA public FROM javaneh_identity_executor;
 REVOKE ALL ON FUNCTION public.mark_idea_classification_stale()
   FROM PUBLIC, anon, authenticated, service_role;
 
@@ -282,9 +296,11 @@ BEGIN
   );
 END
 $function$;
+GRANT CREATE ON SCHEMA public TO javaneh_identity_executor;
 ALTER FUNCTION public.claim_idea_classification(
   uuid, uuid, uuid, uuid, text, text, uuid
 ) OWNER TO javaneh_identity_executor;
+REVOKE CREATE ON SCHEMA public FROM javaneh_identity_executor;
 REVOKE ALL ON FUNCTION public.claim_idea_classification(
   uuid, uuid, uuid, uuid, text, text, uuid
 ) FROM PUBLIC, anon, authenticated, service_role;
@@ -358,8 +374,10 @@ BEGIN
   );
 END
 $function$;
+GRANT CREATE ON SCHEMA public TO javaneh_identity_executor;
 ALTER FUNCTION public.fail_idea_classification(uuid, uuid, text)
   OWNER TO javaneh_identity_executor;
+REVOKE CREATE ON SCHEMA public FROM javaneh_identity_executor;
 REVOKE ALL ON FUNCTION public.fail_idea_classification(uuid, uuid, text)
   FROM PUBLIC, anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.fail_idea_classification(uuid, uuid, text)
@@ -598,10 +616,12 @@ BEGIN
   );
 END
 $function$;
+GRANT CREATE ON SCHEMA public TO javaneh_identity_executor;
 ALTER FUNCTION public.complete_idea_classification(
   uuid, uuid, text, text, text[], integer, integer[], jsonb, numeric,
   text, text, uuid, uuid
 ) OWNER TO javaneh_identity_executor;
+REVOKE CREATE ON SCHEMA public FROM javaneh_identity_executor;
 REVOKE ALL ON FUNCTION public.complete_idea_classification(
   uuid, uuid, text, text, text[], integer, integer[], jsonb, numeric,
   text, text, uuid, uuid
@@ -701,8 +721,10 @@ BEGIN
   RETURN v_inserted_count;
 END
 $function$;
+GRANT CREATE ON SCHEMA public TO javaneh_identity_executor;
 ALTER FUNCTION public.backfill_phase7_classification_state()
   OWNER TO javaneh_identity_executor;
+REVOKE CREATE ON SCHEMA public FROM javaneh_identity_executor;
 REVOKE ALL ON FUNCTION public.backfill_phase7_classification_state()
   FROM PUBLIC, anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.backfill_phase7_classification_state()

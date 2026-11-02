@@ -58,7 +58,7 @@ export const mentorSuccessResponseSchema = z
     suggestion: mentorProviderResponseSchema,
     metadata: z
       .object({
-        provider: z.literal("vercel-ai-gateway"),
+        provider: z.literal("google.generative-ai"),
         model: z.string().min(1).max(180),
         promptVersion: z.string().min(1).max(80),
         latencyMs: z.number().int().nonnegative(),

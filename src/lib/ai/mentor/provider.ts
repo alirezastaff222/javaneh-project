@@ -1,6 +1,6 @@
 import "server-only";
 
-import { gateway } from "@ai-sdk/gateway";
+import { google } from "@ai-sdk/google";
 import {
   generateText,
   NoObjectGeneratedError,
@@ -9,7 +9,7 @@ import {
 import type { ZodType } from "zod";
 import { mentorProviderResponseSchema } from "./contracts";
 
-export const DEFAULT_MENTOR_MODEL = "anthropic/claude-haiku-4.5";
+export const DEFAULT_MENTOR_MODEL = "gemini-3.8-flash";
 export const MENTOR_MAX_INPUT_BYTES = 16_000;
 export const MENTOR_MAX_OUTPUT_TOKENS = 600;
 
@@ -58,16 +58,12 @@ export type MentorModelProvider = {
 
 type MentorEnvironment = {
   AI_MENTOR_MODEL?: string;
-  AI_GATEWAY_API_KEY?: string;
-  VERCEL_OIDC_TOKEN?: string;
-  VERCEL?: string;
+  GOOGLE_GENERATIVE_AI_API_KEY?: string;
 };
 
 const runtimeMentorEnvironment: MentorEnvironment = {
   AI_MENTOR_MODEL: process.env.AI_MENTOR_MODEL,
-  AI_GATEWAY_API_KEY: process.env.AI_GATEWAY_API_KEY,
-  VERCEL_OIDC_TOKEN: process.env.VERCEL_OIDC_TOKEN,
-  VERCEL: process.env.VERCEL,
+  GOOGLE_GENERATIVE_AI_API_KEY: process.env.GOOGLE_GENERATIVE_AI_API_KEY,
 };
 
 export function getMentorModelConfiguration(
@@ -75,11 +71,9 @@ export function getMentorModelConfiguration(
 ): { model: string; configured: boolean } {
   const model = environment.AI_MENTOR_MODEL?.trim() || DEFAULT_MENTOR_MODEL;
   const modelIsValid =
-    /^[a-z0-9][a-z0-9._-]{0,80}\/[a-z0-9][a-z0-9._-]{0,120}$/i.test(model);
+    /^[a-z0-9][a-z0-9._-]{0,120}$/i.test(model);
   const hasAuthentication = Boolean(
-    environment.AI_GATEWAY_API_KEY?.trim() ||
-      environment.VERCEL_OIDC_TOKEN?.trim() ||
-      environment.VERCEL === "1",
+    environment.GOOGLE_GENERATIVE_AI_API_KEY?.trim(),
   );
 
   if (!modelIsValid) {
@@ -184,7 +178,11 @@ export function validateMentorInputBudget(input: {
   }
 }
 
-export function createGatewayMentorProvider(): MentorModelProvider {
+export function createGoogleMentorModel(model: string) {
+  return google(model);
+}
+
+export function createGoogleMentorProvider(): MentorModelProvider {
   function prepare(): void {
     const { configured } = getMentorModelConfiguration();
     if (!configured) throw new MentorProviderError("not_configured", false);
@@ -193,7 +191,7 @@ export function createGatewayMentorProvider(): MentorModelProvider {
   return {
     prepare,
     circuitKey() {
-      return `vercel-ai-gateway:${getMentorModelConfiguration().model}`;
+      return `google.generative-ai:${getMentorModelConfiguration().model}`;
     },
     async probe({ signal }) {
       const { model, configured } = getMentorModelConfiguration();
@@ -203,7 +201,7 @@ export function createGatewayMentorProvider(): MentorModelProvider {
 
       try {
         const result = await generateText({
-          model: gateway(model),
+          model: createGoogleMentorModel(model),
           prompt: "Reply with OK.",
           maxOutputTokens: 2,
           maxRetries: 0,
@@ -225,7 +223,7 @@ export function createGatewayMentorProvider(): MentorModelProvider {
 
       try {
         const result = await generateText({
-          model: gateway(model),
+          model: createGoogleMentorModel(model),
           system: input.system,
           prompt: input.prompt,
           output: Output.object({

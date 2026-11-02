@@ -1,12 +1,13 @@
--- Run once as supabase_admin before applying the core migration.
--- The migration role (postgres) cannot grant access to the auth schema or
--- create a trigger on auth.users in the local Supabase environment.
+-- Run once before applying the core migration. Use the direct postgres
+-- session on hosted Supabase, or supabase_admin for local/test provisioning.
 BEGIN;
 
 DO $$
 BEGIN
-  IF current_user <> 'supabase_admin' OR session_user <> 'supabase_admin' THEN
-    RAISE EXCEPTION 'Connect directly as supabase_admin to run this prerequisite'
+  IF current_user NOT IN ('postgres', 'supabase_admin')
+     OR session_user <> current_user THEN
+    RAISE EXCEPTION
+      'Connect directly as postgres (hosted) or supabase_admin (local/test) to run this prerequisite'
       USING ERRCODE = '42501';
   END IF;
 
@@ -32,18 +33,52 @@ ALTER ROLE javaneh_identity_executor
 -- Only the trusted migration role may assume the internal owners.
 GRANT javaneh_identity_bridge, javaneh_identity_executor TO postgres;
 
--- The bridge must be able to call the verified JWT identity function.
-GRANT USAGE ON SCHEMA auth TO javaneh_identity_bridge;
-GRANT EXECUTE ON FUNCTION auth.uid() TO javaneh_identity_bridge;
+DO $privilege_check$
+BEGIN
+  IF current_user = 'supabase_admin' THEN
+    -- Local/test provisioning: postgres does not have these privileges there.
+    GRANT USAGE ON SCHEMA auth TO javaneh_identity_bridge;
+    GRANT EXECUTE ON FUNCTION auth.uid() TO javaneh_identity_bridge;
+    GRANT REFERENCES ON TABLE auth.users TO postgres;
+    GRANT USAGE ON SCHEMA extensions TO javaneh_identity_executor;
+    GRANT EXECUTE ON FUNCTION extensions.digest(bytea, text)
+      TO javaneh_identity_executor;
+    GRANT CREATE ON SCHEMA public TO postgres;
+    GRANT TRIGGER ON TABLE auth.users TO postgres;
+  ELSE
+    -- Hosted postgres must rely only on privileges already effective for the
+    -- internal roles; its effective Auth privileges are not necessarily grantable.
+    IF NOT pg_catalog.has_schema_privilege(
+         'javaneh_identity_bridge', 'auth', 'USAGE'
+       )
+       OR NOT pg_catalog.has_function_privilege(
+         'javaneh_identity_bridge', 'auth.uid()', 'EXECUTE'
+       ) THEN
+      RAISE EXCEPTION
+        'Hosted ACL blocker: javaneh_identity_bridge needs effective auth USAGE and auth.uid() EXECUTE'
+        USING ERRCODE = '42501';
+    END IF;
 
--- Required to create the owner foreign key and call server-side SHA-256.
-GRANT REFERENCES ON TABLE auth.users TO postgres;
-GRANT USAGE ON SCHEMA extensions TO javaneh_identity_executor;
-GRANT EXECUTE ON FUNCTION extensions.digest(bytea, text)
-  TO javaneh_identity_executor;
+    IF NOT pg_catalog.has_schema_privilege(
+         'javaneh_identity_executor', 'extensions', 'USAGE'
+       )
+       OR NOT pg_catalog.has_function_privilege(
+         'javaneh_identity_executor', 'extensions.digest(bytea,text)', 'EXECUTE'
+       ) THEN
+      RAISE EXCEPTION
+        'Hosted ACL blocker: javaneh_identity_executor needs effective extensions USAGE and extensions.digest(bytea,text) EXECUTE'
+        USING ERRCODE = '42501';
+    END IF;
 
--- The migration role owns its public objects and installs the Auth trigger.
-GRANT CREATE ON SCHEMA public TO postgres;
-GRANT TRIGGER ON TABLE auth.users TO postgres;
+    IF NOT pg_catalog.has_table_privilege('postgres', 'auth.users', 'REFERENCES')
+       OR NOT pg_catalog.has_table_privilege('postgres', 'auth.users', 'TRIGGER')
+       OR NOT pg_catalog.has_schema_privilege('postgres', 'public', 'CREATE') THEN
+      RAISE EXCEPTION
+        'Hosted migration session lacks an effective Auth or public-schema privilege required by the core migration'
+        USING ERRCODE = '42501';
+    END IF;
+  END IF;
+END
+$privilege_check$;
 
 COMMIT;
