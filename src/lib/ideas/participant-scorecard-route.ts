@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isUnauthenticatedAuthError } from "@/lib/supabase/auth-errors";
 import { parseParticipantScorecard } from "./participant-scorecard";
 
 const responseHeaders = { "Cache-Control": "private, no-store" };
@@ -17,7 +18,10 @@ export function createParticipantScorecardHandler<TContext>(dependencies: {
     let authenticated: Awaited<ReturnType<typeof dependencies.authenticate>>;
     try {
       authenticated = await dependencies.authenticate();
-    } catch {
+    } catch (error) {
+      if (isUnauthenticatedAuthError(error)) {
+        return response({ error: "Authentication required." }, 401);
+      }
       return response({ error: "The scorecard could not be loaded." }, 503);
     }
     if (!authenticated) {

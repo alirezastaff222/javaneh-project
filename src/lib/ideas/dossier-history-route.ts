@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isUnauthenticatedAuthError } from "@/lib/supabase/auth-errors";
 import { parseDossierHistory } from "./dossier-history";
 
 const responseHeaders = { "Cache-Control": "private, no-store" };
@@ -19,7 +20,10 @@ export function createDossierHistoryHandler<TContext>(dependencies: {
     let authenticated: Awaited<ReturnType<typeof dependencies.authenticate>>;
     try {
       authenticated = await dependencies.authenticate();
-    } catch {
+    } catch (error) {
+      if (isUnauthenticatedAuthError(error)) {
+        return response({ error: "Authentication required." }, 401);
+      }
       return response({ error: "History could not be loaded." }, 503);
     }
 

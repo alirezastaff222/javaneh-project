@@ -1,5 +1,6 @@
 import { connection } from "next/server";
 import { createParticipantScorecardHandler } from "@/lib/ideas/participant-scorecard-route";
+import { isUnauthenticatedAuthError } from "@/lib/supabase/auth-errors";
 import { createClient } from "@/lib/supabase/server";
 
 export async function GET(request: Request) {
@@ -12,7 +13,10 @@ export async function GET(request: Request) {
         data: { user },
         error,
       } = await supabase.auth.getUser();
-      if (error) throw error;
+      if (error) {
+        if (isUnauthenticatedAuthError(error)) return null;
+        throw error;
+      }
       return user ? { context: supabase } : null;
     },
     fetchScorecard: async (ideaId, supabase) => {

@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
+import { isUnauthenticatedAuthError } from "@/lib/supabase/auth-errors";
 import {
   buildIdeaPortfolio,
   type HumanEvaluationStatus,
@@ -14,7 +15,10 @@ export type ParticipantProfile = {
 
 export type ParticipantWorkspace =
   | { kind: "unauthenticated" }
-  | { kind: "error" }
+  | {
+      kind: "error";
+      code: "ideas_unavailable" | "stages_unavailable" | "invalid_workspace";
+    }
   | {
       kind: "authenticated";
       profile: ParticipantProfile;
@@ -42,7 +46,11 @@ export async function loadParticipantWorkspace(): Promise<ParticipantWorkspace> 
     error: authError,
   } = await supabase.auth.getUser();
 
-  if (authError) return { kind: "error" };
+  if (authError) {
+    return isUnauthenticatedAuthError(authError)
+      ? { kind: "unauthenticated" }
+      : { kind: "error", code: "invalid_workspace" };
+  }
   if (!user) return { kind: "unauthenticated" };
 
   const { data: ideaRows, error: ideasError } = await supabase
@@ -50,7 +58,13 @@ export async function loadParticipantWorkspace(): Promise<ParticipantWorkspace> 
     .select("id,status,revision,current_step,submitted_at,created_at,updated_at")
     .order("updated_at", { ascending: false });
 
-  if (ideasError || !Array.isArray(ideaRows)) return { kind: "error" };
+  if (ideasError || !Array.isArray(ideaRows)) {
+    console.error("Participant workspace ideas query failed", {
+      code: ideasError?.code,
+      message: ideasError?.message,
+    });
+    return { kind: "error", code: "ideas_unavailable" };
+  }
 
   const ideaIds = ideaRows.flatMap((idea) =>
     typeof idea.id === "string" ? [idea.id] : [],
@@ -64,12 +78,18 @@ export async function loadParticipantWorkspace(): Promise<ParticipantWorkspace> 
       .in("idea_id", ideaIds)
       .order("stage_number", { ascending: true });
 
-    if (stagesError || !Array.isArray(data)) return { kind: "error" };
+    if (stagesError || !Array.isArray(data)) {
+      console.error("Participant workspace stages query failed", {
+        code: stagesError?.code,
+        message: stagesError?.message,
+      });
+      return { kind: "error", code: "stages_unavailable" };
+    }
     stageRows = data;
   }
 
   const portfolio = buildIdeaPortfolio(ideaRows, stageRows);
-  if (!portfolio) return { kind: "error" };
+  if (!portfolio) return { kind: "error", code: "invalid_workspace" };
 
   const submittedIdeas = portfolio.filter((idea) => idea.status === "submitted");
   const evaluationResults = await Promise.all(
@@ -90,7 +110,7 @@ export async function loadParticipantWorkspace(): Promise<ParticipantWorkspace> 
     (result): result is NonNullable<typeof result> => result !== null,
   );
   if (validEvaluationResults.length !== evaluationResults.length) {
-    return { kind: "error" };
+    return { kind: "error", code: "invalid_workspace" };
   }
   const evaluationStatusByIdea = new Map(
     validEvaluationResults.map((result) => [result.ideaId, result.status]),
@@ -140,7 +160,9 @@ export async function loadParticipantWorkspace(): Promise<ParticipantWorkspace> 
       continue;
     }
     const evaluationStatus = evaluationStatusByIdea.get(idea.id);
-    if (!evaluationStatus) return { kind: "error" };
+    if (!evaluationStatus) {
+      return { kind: "error", code: "invalid_workspace" };
+    }
     ideas.push({
       ...idea,
       evaluationStatus,

@@ -69,6 +69,35 @@ test("requires an authenticated session and never calls the scorecard anonymousl
   assert.equal(queries, 0);
 });
 
+test("maps a missing auth session to 401 without querying the scorecard", async () => {
+  let queries = 0;
+  const handler = createParticipantScorecardHandler({
+    authenticate: async () => {
+      throw { name: "AuthSessionMissingError", status: 400 };
+    },
+    fetchScorecard: async () => {
+      queries += 1;
+      return {};
+    },
+  });
+
+  const response = await handler(get(`?ideaId=${ideaId}`));
+  assert.equal(response.status, 401);
+  assert.equal(queries, 0);
+});
+
+test("preserves authentication backend failures as 503", async () => {
+  const handler = createParticipantScorecardHandler({
+    authenticate: async () => {
+      throw new Error("auth backend unavailable");
+    },
+    fetchScorecard: async () => ({}),
+  });
+
+  const response = await handler(get(`?ideaId=${ideaId}`));
+  assert.equal(response.status, 503);
+});
+
 test("accepts only an idea ID and passes the server session context to the RPC", async () => {
   const context = { session: "trusted" };
   let receivedIdeaId: string | undefined;

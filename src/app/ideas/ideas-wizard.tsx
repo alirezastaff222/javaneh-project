@@ -89,6 +89,19 @@ type MentorUiStatus =
   | "recovery_in_progress"
   | "restored";
 
+function workspaceErrorMessage(
+  code: "ideas_unavailable" | "stages_unavailable" | "invalid_workspace",
+): string {
+  switch (code) {
+    case "ideas_unavailable":
+      return "فهرست ایده‌های شما در حال حاضر از پایگاه داده در دسترس نیست. اتصال یا تنظیمات پایگاه داده را بررسی کنید و دوباره تلاش کنید.";
+    case "stages_unavailable":
+      return "مراحل ایده‌های شما در حال حاضر بارگذاری نشدند. دوباره تلاش کنید.";
+    default:
+      return "اطلاعات فضای کار معتبر نبود. دوباره تلاش کنید.";
+  }
+}
+
 const knownStageStatuses = new Set<StageStatus>([
   "not_started",
   "in_progress",
@@ -280,7 +293,7 @@ export default function IdeasPage({
   );
   const [ideasError, setIdeasError] = useState<string | null>(
     initialWorkspace.kind === "error"
-      ? "فضای کار شما بارگذاری نشد. دوباره تلاش کنید."
+      ? workspaceErrorMessage(initialWorkspace.code)
       : null,
   );
   const [selectedIdea, setSelectedIdea] = useState<Idea | null>(null);
@@ -456,7 +469,9 @@ export default function IdeasPage({
         setIdeasError(
           response.status === 401
             ? "نشست شما معتبر نیست یا پایان یافته است. صفحه را تازه‌سازی کنید."
-            : "فضای کار شما از پایگاه داده بارگذاری نشد. دوباره تلاش کنید.",
+            : response.status === 503
+              ? "فهرست ایده‌های شما موقتاً در دسترس نیست. اتصال یا تنظیمات پایگاه داده را بررسی کنید و دوباره تلاش کنید."
+              : "فضای کار شما از پایگاه داده بارگذاری نشد. دوباره تلاش کنید.",
         );
         return null;
       }
@@ -2138,6 +2153,14 @@ export default function IdeasPage({
                     : null) ??
                   user.id}
               </p>
+              <form action="/auth/sign-out" method="post" className="mt-3">
+                <button
+                  type="submit"
+                  className="text-sm font-medium underline underline-offset-4"
+                >
+                  خروج از حساب
+                </button>
+              </form>
             </div>
           </div>
 

@@ -46,6 +46,35 @@ test("requires an authenticated session and never calls history for anonymous us
   assert.equal(queries, 0);
 });
 
+test("maps a missing auth session to 401 without querying history", async () => {
+  let queries = 0;
+  const handler = createDossierHistoryHandler({
+    authenticate: async () => {
+      throw { name: "AuthSessionMissingError", status: 400 };
+    },
+    fetchHistory: async () => {
+      queries += 1;
+      return [];
+    },
+  });
+
+  const response = await handler(get(`?ideaId=${ideaId}`));
+  assert.equal(response.status, 401);
+  assert.equal(queries, 0);
+});
+
+test("preserves authentication backend failures as 503", async () => {
+  const handler = createDossierHistoryHandler({
+    authenticate: async () => {
+      throw new Error("auth backend unavailable");
+    },
+    fetchHistory: async () => [],
+  });
+
+  const response = await handler(get(`?ideaId=${ideaId}`));
+  assert.equal(response.status, 503);
+});
+
 test("accepts only an idea ID and passes the server session context to the RPC path", async () => {
   const context = { session: "trusted" };
   let receivedIdeaId: string | undefined;

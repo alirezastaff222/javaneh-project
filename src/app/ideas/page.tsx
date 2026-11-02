@@ -1,10 +1,19 @@
 import { Suspense } from "react";
 import { connection } from "next/server";
+import { redirect } from "next/navigation";
 import { loadParticipantWorkspace } from "@/lib/ideas/participant-workspace";
+import { buildAuthPath } from "@/lib/supabase/auth";
+import { createClient } from "@/lib/supabase/server";
 import IdeasWizard from "./ideas-wizard";
 
 async function ParticipantWorkspace() {
   await connection();
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) redirect(buildAuthPath("/auth/sign-in", "/ideas"));
+
   const initialWorkspace = await loadParticipantWorkspace();
   return <IdeasWizard initialWorkspace={initialWorkspace} />;
 }
