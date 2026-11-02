@@ -10,6 +10,15 @@ VALUES (
   'a6000000-0000-4000-8000-000000000001', 'authenticated', 'authenticated',
   'm9r5-concurrent-participant@test.invalid', '', '{}'::jsonb, '{}'::jsonb,
   pg_catalog.now(), pg_catalog.now(), false, false
+), (
+  'a6000000-0000-4000-8000-000000000002', 'authenticated', 'authenticated',
+  'm9r5-concurrent-admin@test.invalid', '', '{}'::jsonb, '{}'::jsonb,
+  pg_catalog.now(), pg_catalog.now(), false, false
+);
+
+INSERT INTO public.scoring_role_assignments (user_id, role_name, assigned_by)
+VALUES (
+  'a6000000-0000-4000-8000-000000000002', 'scoring_administrator', NULL
 );
 
 INSERT INTO public.scoring_configurations (configuration_key)
@@ -19,6 +28,7 @@ DO $seed_concurrent_scoring$
 DECLARE
   v_configuration_id uuid;
   v_version_id uuid;
+  v_competition_id uuid;
 BEGIN
   SELECT configuration.id INTO v_configuration_id
     FROM public.scoring_configurations AS configuration
@@ -90,6 +100,9 @@ BEGIN
     'Disposable concurrent award fixture.', 'active', v_version_id,
     pg_catalog.clock_timestamp() - interval '1 hour',
     pg_catalog.clock_timestamp() + interval '1 day'
+  ) RETURNING id INTO v_competition_id;
+  PERFORM pg_catalog.set_config(
+    'test.m9r5_concurrent_competition', v_competition_id::text, true
   );
 END
 $seed_concurrent_scoring$;
@@ -112,6 +125,19 @@ BEGIN
   IF v_result->>'outcome' <> 'applied' THEN
     RAISE EXCEPTION 'Concurrent award evidence save failed: %', v_result;
   END IF;
+  PERFORM pg_catalog.set_config(
+    'request.jwt.claim.sub', 'a6000000-0000-4000-8000-000000000002', true
+  );
+  v_result := public.assign_idea_competition(
+    v_idea_id,
+    pg_catalog.current_setting('test.m9r5_concurrent_competition')::uuid
+  );
+  IF v_result->>'outcome' <> 'assigned' THEN
+    RAISE EXCEPTION 'Concurrent award idea assignment failed: %', v_result;
+  END IF;
+  PERFORM pg_catalog.set_config(
+    'request.jwt.claim.sub', 'a6000000-0000-4000-8000-000000000001', true
+  );
   v_result := public.submit_milestone_for_validation(
     v_idea_id, pg_catalog.current_setting('test.m9r5_concurrent_version')::uuid,
     'S1-M1', 2

@@ -400,14 +400,14 @@ END
 $m9r10_history_access_assertion$;
 RESET ROLE;
 
-SET LOCAL ROLE javaneh_identity_executor;
+SET LOCAL session_replication_role = replica;
 UPDATE public.ideas AS idea
   SET status = 'submitted',
       current_step = 7,
       submitted_at = pg_catalog.clock_timestamp()
   WHERE idea.id =
     pg_catalog.current_setting('test.m9r10_empty_history_idea')::uuid;
-RESET ROLE;
+SET LOCAL session_replication_role = origin;
 
 SET LOCAL ROLE authenticated;
 DO $m9r10_empty_history_assertion$

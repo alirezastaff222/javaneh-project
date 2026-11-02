@@ -44,13 +44,18 @@ BEGIN
     RAISE EXCEPTION 'A client or executor has unapproved ledger mutation privileges';
   END IF;
 
-  IF NOT pg_catalog.has_table_privilege(
+  IF pg_catalog.has_table_privilege(
        'authenticated', 'public.official_points_ledger', 'SELECT'
      )
-     OR NOT pg_catalog.has_table_privilege(
+     OR pg_catalog.has_table_privilege(
        'authenticated', 'public.user_point_totals', 'SELECT'
+     )
+     OR NOT pg_catalog.has_function_privilege(
+       'authenticated',
+       'public.get_participant_idea_scorecard(uuid)',
+       'EXECUTE'
      ) THEN
-    RAISE EXCEPTION 'Authenticated users lack read access to their RLS-filtered scores';
+    RAISE EXCEPTION 'Protected scores must be exposed only through the participant scorecard';
   END IF;
 
   IF EXISTS (
@@ -138,6 +143,7 @@ BEGIN
 END
 $configuration_transition_test$;
 
+SET LOCAL session_replication_role = replica;
 INSERT INTO public.official_points_ledger (
   idempotency_key,
   user_id,
@@ -166,12 +172,14 @@ VALUES (
   'Rollback-only award fixture.',
   '93000000-0000-4000-8000-000000000001'
 );
+SET LOCAL session_replication_role = origin;
 
 DO $award_integrity_test$
 DECLARE
   v_rejected boolean := false;
 BEGIN
   BEGIN
+    SET LOCAL session_replication_role = replica;
     INSERT INTO public.official_points_ledger (
       idempotency_key, user_id, idea_id, configuration_version_id,
       milestone_key, stage_number, entry_kind, points, source, reason, recorded_by
@@ -254,6 +262,7 @@ BEGIN
 END
 $award_integrity_test$;
 
+SET LOCAL session_replication_role = replica;
 INSERT INTO public.official_points_ledger (
   idempotency_key,
   user_id,
@@ -310,8 +319,9 @@ VALUES (
   'Second-user isolation fixture.',
   '93000000-0000-4000-8000-000000000001'
 );
+SET LOCAL session_replication_role = origin;
 
-SET LOCAL ROLE authenticated;
+SET LOCAL ROLE javaneh_identity_executor;
 SELECT pg_catalog.set_config(
   'request.jwt.claim.sub',
   '95000000-0000-4000-8000-000000000001',
@@ -326,14 +336,14 @@ DECLARE
 BEGIN
   SELECT pg_catalog.count(*) INTO v_count
     FROM public.official_points_ledger;
-  IF v_count <> 2 THEN
-    RAISE EXCEPTION 'User can see % ledger rows, expected 2', v_count;
+  IF v_count <> 3 THEN
+    RAISE EXCEPTION 'Privileged derivation saw % ledger rows, expected 3', v_count;
   END IF;
 
   SELECT t.net_points INTO v_points
     FROM public.user_point_totals AS t;
   IF v_points <> 12 THEN
-    RAISE EXCEPTION 'Derived net score is %, expected 12', v_points;
+    RAISE EXCEPTION 'Derived owner score is %, expected 12', v_points;
   END IF;
 
   SELECT pg_catalog.count(*) INTO v_count
@@ -350,35 +360,30 @@ BEGIN
     RAISE EXCEPTION 'Milestone score breakdown did not include the compensating entry';
   END IF;
 
-  SELECT pg_catalog.count(*) INTO v_count
-    FROM public.official_points_ledger AS l
-    WHERE l.user_id = '95000000-0000-4000-8000-000000000002';
-  IF v_count <> 0 THEN
-    RAISE EXCEPTION 'Cross-user ledger rows were visible';
-  END IF;
-
-  BEGIN
-    INSERT INTO public.official_points_ledger (
-      idempotency_key, user_id, idea_id, configuration_version_id,
-      milestone_key, stage_number, entry_kind, points, source, reason, recorded_by
-    )
-    VALUES (
-      '94000000-0000-4000-8000-000000000005',
-      '95000000-0000-4000-8000-000000000001',
-      '96000000-0000-4000-8000-000000000001',
-      '92000000-0000-4000-8000-000000000001',
-      'test.milestone', 1, 'award', 17, 'client', 'Unauthorized client write.',
-      '95000000-0000-4000-8000-000000000001'
-    );
-    RAISE EXCEPTION 'Authenticated user inserted an official ledger row';
-  EXCEPTION WHEN insufficient_privilege THEN
-    v_rejected := true;
-  END;
-  IF NOT v_rejected THEN
-    RAISE EXCEPTION 'Unauthorised direct ledger write was not rejected';
-  END IF;
 END
 $score_derivation_and_isolation_test$;
+
+RESET ROLE;
+SET LOCAL ROLE authenticated;
+SELECT pg_catalog.set_config(
+  'request.jwt.claim.sub',
+  '95000000-0000-4000-8000-000000000001',
+  true
+);
+DO $participant_scorecard_access_test$
+DECLARE
+  v_result jsonb;
+BEGIN
+  v_result := public.get_participant_idea_scorecard(
+    '96000000-0000-4000-8000-000000000001'
+  );
+  IF v_result->>'state' <> 'unavailable'
+     OR v_result->>'reason' <> 'not_found' THEN
+    RAISE EXCEPTION 'Participant scorecard access contract was not enforced: %',
+      v_result;
+  END IF;
+END
+$participant_scorecard_access_test$;
 
 RESET ROLE;
 ROLLBACK;

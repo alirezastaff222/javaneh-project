@@ -74,10 +74,17 @@ VALUES
     'a4000000-0000-4000-8000-000000000003', 'authenticated', 'authenticated',
     'm9r4-validator@test.invalid', '', '{}'::jsonb, '{}'::jsonb,
     pg_catalog.now(), pg_catalog.now(), false, false
+  ),
+  (
+    'a4000000-0000-4000-8000-000000000004', 'authenticated', 'authenticated',
+    'm9r4-scoring-admin@test.invalid', '', '{}'::jsonb, '{}'::jsonb,
+    pg_catalog.now(), pg_catalog.now(), false, false
   );
 
 INSERT INTO public.scoring_role_assignments (user_id, role_name, assigned_by)
-VALUES ('a4000000-0000-4000-8000-000000000003', 'validator', NULL);
+VALUES
+  ('a4000000-0000-4000-8000-000000000003', 'validator', NULL),
+  ('a4000000-0000-4000-8000-000000000004', 'scoring_administrator', NULL);
 
 INSERT INTO public.scoring_configurations (configuration_key)
 VALUES ('m9r4-validation-test')
@@ -135,6 +142,9 @@ BEGIN
     pg_catalog.clock_timestamp() + interval '1 day'
   )
   RETURNING id INTO v_competition_id;
+  PERFORM pg_catalog.set_config(
+    'test.m9r4_competition_id', v_competition_id::text, true
+  );
 
   INSERT INTO public.scoring_milestone_catalog (
     configuration_version_id, milestone_key, stage_number, definition,
@@ -269,6 +279,32 @@ END
 $create_hybrid_ideas$;
 
 SELECT pg_catalog.set_config(
+  'request.jwt.claim.sub', 'a4000000-0000-4000-8000-000000000004', true
+);
+DO $assign_validation_ideas$
+DECLARE
+  v_result jsonb;
+  v_idea_id uuid;
+BEGIN
+  FOREACH v_idea_id IN ARRAY ARRAY[
+    pg_catalog.current_setting('test.m9r4_objective_idea')::uuid,
+    pg_catalog.current_setting('test.m9r4_revision_idea')::uuid,
+    pg_catalog.current_setting('test.m9r4_human_idea')::uuid,
+    pg_catalog.current_setting('test.m9r4_hybrid_idea')::uuid,
+    pg_catalog.current_setting('test.m9r4_hybrid_failure_idea')::uuid
+  ] LOOP
+    v_result := public.assign_idea_competition(
+      v_idea_id,
+      pg_catalog.current_setting('test.m9r4_competition_id')::uuid
+    );
+    IF v_result->>'outcome' <> 'assigned' THEN
+      RAISE EXCEPTION 'Validation fixture competition assignment failed: %', v_result;
+    END IF;
+  END LOOP;
+END
+$assign_validation_ideas$;
+
+SELECT pg_catalog.set_config(
   'request.jwt.claim.sub', 'a4000000-0000-4000-8000-000000000001', true
 );
 
@@ -289,6 +325,9 @@ BEGIN
     RAISE EXCEPTION 'Deterministic objective validation did not pass: %', v_result;
   END IF;
   v_request_id := (v_result->>'request_id')::uuid;
+  PERFORM pg_catalog.set_config(
+    'test.m9r4_objective_request', v_request_id::text, true
+  );
   IF NOT (public.get_milestone_scoring_eligibility(v_request_id)->>'eligible')::boolean THEN
     RAISE EXCEPTION 'Passing objective validation did not establish eligibility';
   END IF;
@@ -299,10 +338,7 @@ BEGIN
     'S1-M1', 2
   );
   v_repeat_id := (v_result->>'request_id')::uuid;
-  IF v_result->>'outcome' <> 'replayed' OR v_repeat_id <> v_request_id
-     OR (SELECT pg_catalog.count(*)
-         FROM public.milestone_validation_events AS event
-         WHERE event.request_id = v_request_id) <> 2 THEN
+  IF v_result->>'outcome' <> 'replayed' OR v_repeat_id <> v_request_id THEN
     RAISE EXCEPTION 'Repeated objective submission created duplicate history: %', v_result;
   END IF;
 
@@ -337,17 +373,38 @@ BEGIN
     'S1-M1', 3
   );
   IF v_result->>'outcome' <> 'validated'
-     OR (v_result->>'attempt')::integer <> 2
-     OR (SELECT pg_catalog.count(*)
-         FROM public.milestone_validation_requests AS request
-         WHERE request.idea_id = v_revision_idea
-           AND request.milestone_key = 'S1-M1') <> 2 THEN
+     OR (v_result->>'attempt')::integer <> 2 THEN
     RAISE EXCEPTION 'Revalidation did not create a new revision-linked attempt: %', v_result;
   END IF;
 
 END
 $objective_validation_test$;
 
+RESET ROLE;
+SET LOCAL ROLE javaneh_identity_executor;
+DO $objective_event_history_test$
+BEGIN
+  IF (
+    SELECT pg_catalog.count(*)
+      FROM public.milestone_validation_events AS event
+     WHERE event.request_id =
+       pg_catalog.current_setting('test.m9r4_objective_request')::uuid
+  ) <> 2 THEN
+    RAISE EXCEPTION 'Repeated objective submission created duplicate history';
+  END IF;
+  IF (
+    SELECT pg_catalog.count(*)
+      FROM public.milestone_validation_requests AS request
+     WHERE request.idea_id =
+       pg_catalog.current_setting('test.m9r4_revision_idea')::uuid
+       AND request.milestone_key = 'S1-M1'
+  ) <> 2 THEN
+    RAISE EXCEPTION 'Revalidation did not create a new revision-linked attempt';
+  END IF;
+END
+$objective_event_history_test$;
+
+SET LOCAL ROLE authenticated;
 DO $confirmation_is_separate_test$
 DECLARE
   v_idea_id uuid := pg_catalog.current_setting('test.m9r4_objective_idea')::uuid;
@@ -361,11 +418,9 @@ BEGIN
   IF v_result->>'outcome' <> 'confirmed' THEN
     RAISE EXCEPTION 'Stage confirmation failed: %', v_result;
   END IF;
-  IF (SELECT pg_catalog.count(*)
-        FROM public.milestone_validation_requests AS request
-        WHERE request.idea_id = v_idea_id) <> 1 THEN
-    RAISE EXCEPTION 'Stage confirmation created a milestone validation request';
-  END IF;
+  PERFORM pg_catalog.set_config(
+    'test.m9r4_confirmation_idea', v_idea_id::text, true
+  );
 END
 $confirmation_is_separate_test$;
 
@@ -473,6 +528,11 @@ BEGIN
       v_failed_hybrid;
   END IF;
   PERFORM pg_catalog.set_config(
+    'test.m9r4_hybrid_failure_request',
+    v_failed_hybrid->>'request_id',
+    true
+  );
+  PERFORM pg_catalog.set_config(
     'request.jwt.claim.sub', 'a4000000-0000-4000-8000-000000000003', true
   );
   v_result := public.validate_milestone_request(
@@ -508,6 +568,9 @@ BEGIN
     RAISE EXCEPTION 'Human revalidation submission failed: %', v_result;
   END IF;
   PERFORM pg_catalog.set_config('test.m9r4_human_retry', v_result->>'request_id', true);
+  PERFORM pg_catalog.set_config(
+    'test.m9r4_human_idea', v_idea_id::text, true
+  );
 END
 $human_revalidation_submission$;
 
@@ -532,20 +595,40 @@ BEGIN
   PERFORM pg_catalog.set_config(
     'request.jwt.claim.sub', 'a4000000-0000-4000-8000-000000000001', true
   );
-  IF (SELECT pg_catalog.count(*)
-           FROM public.milestone_validation_requests AS request
-           WHERE request.idea_id = v_idea_id
-             AND request.milestone_key = 'S1-M2') <> 2
-     OR (SELECT pg_catalog.count(*)
-           FROM public.milestone_validation_requests AS request
-           WHERE request.idea_id = v_idea_id
-             AND request.milestone_key = 'S1-M2'
-             AND request.status = 'needs_revision') <> 1 THEN
-    RAISE EXCEPTION 'Revalidation overwrote or lost the prior decision';
-  END IF;
 END
 $human_revalidation_decision$;
 
+RESET ROLE;
+SET LOCAL ROLE javaneh_identity_executor;
+DO $later_validation_storage_test$
+BEGIN
+  IF (
+    SELECT pg_catalog.count(*)
+      FROM public.milestone_validation_requests AS request
+     WHERE request.idea_id =
+       pg_catalog.current_setting('test.m9r4_confirmation_idea')::uuid
+  ) <> 1
+     OR (
+       SELECT pg_catalog.count(*)
+         FROM public.milestone_validation_requests AS request
+        WHERE request.idea_id =
+          pg_catalog.current_setting('test.m9r4_human_idea')::uuid
+          AND request.milestone_key = 'S1-M2'
+     ) <> 2
+     OR (
+       SELECT pg_catalog.count(*)
+         FROM public.milestone_validation_requests AS request
+        WHERE request.idea_id =
+          pg_catalog.current_setting('test.m9r4_human_idea')::uuid
+          AND request.milestone_key = 'S1-M2'
+          AND request.status = 'needs_revision'
+     ) <> 1 THEN
+    RAISE EXCEPTION 'Validation request history was overwritten or lost';
+  END IF;
+END
+$later_validation_storage_test$;
+
+SET LOCAL ROLE authenticated;
 DO $self_validation_test$
 DECLARE
   v_result jsonb;
@@ -585,11 +668,36 @@ BEGIN
 END
 $self_validation_test$;
 
+RESET ROLE;
+SET LOCAL ROLE javaneh_identity_executor;
 DO $award_and_isolation_test$
 BEGIN
   IF (SELECT pg_catalog.count(*) FROM public.official_points_ledger)
-     <> pg_catalog.current_setting('test.m9r4_ledger_count')::bigint THEN
-    RAISE EXCEPTION 'Validation and eligibility checks wrote an official award';
+     <= pg_catalog.current_setting('test.m9r4_ledger_count')::bigint THEN
+    RAISE EXCEPTION 'Successful validation did not write an official award';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+      FROM public.official_points_ledger AS ledger
+     WHERE ledger.entry_kind = 'award'
+       AND ledger.source = 'milestone_validation'
+       AND ledger.validation_request_id IS NOT NULL
+     GROUP BY ledger.validation_request_id
+    HAVING pg_catalog.count(*) <> 1
+  ) THEN
+    RAISE EXCEPTION 'Validation scoring created duplicate awards';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+      FROM public.official_points_ledger AS ledger
+     WHERE ledger.validation_request_id IN (
+       pg_catalog.current_setting('test.m9r4_failed_request')::uuid,
+       pg_catalog.current_setting('test.m9r4_hybrid_failure_request')::uuid
+     )
+  ) THEN
+    RAISE EXCEPTION 'Rejected or revision-required validation received points';
   END IF;
 
   IF pg_catalog.has_table_privilege(
@@ -603,22 +711,25 @@ BEGIN
 END
 $award_and_isolation_test$;
 
-RESET ROLE;
 SET LOCAL ROLE authenticated;
 SELECT pg_catalog.set_config(
-  'request.jwt.claim.sub', 'a4000000-0000-4000-8000-000000000004', true
+  'request.jwt.claim.sub', 'a4000000-0000-4000-8000-000000000001', true
 );
 DO $cross_user_isolation_test$
 DECLARE
-  v_count integer;
   v_rejected boolean := false;
 BEGIN
-  SELECT pg_catalog.count(*) INTO v_count
-    FROM public.milestone_validation_requests;
-  IF v_count <> 0 THEN
-    RAISE EXCEPTION 'Participant read another user''s validation request';
+  BEGIN
+    PERFORM pg_catalog.count(*)
+      FROM public.milestone_validation_requests;
+  EXCEPTION WHEN insufficient_privilege THEN
+    v_rejected := true;
+  END;
+  IF NOT v_rejected THEN
+    RAISE EXCEPTION 'Participant directly read validation requests';
   END IF;
 
+  v_rejected := false;
   BEGIN
     PERFORM public.get_milestone_scoring_eligibility(
       pg_catalog.current_setting('test.m9r4_hybrid_request')::uuid

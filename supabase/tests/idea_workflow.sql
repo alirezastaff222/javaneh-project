@@ -454,15 +454,26 @@ BEGIN
   IF v_result->>'outcome' <> 'evaluation_history_exists' THEN
     RAISE EXCEPTION 'Deletion did not preserve evaluation history: %', v_result;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM public.ideas WHERE id = v_idea_id)
-     OR NOT EXISTS (
-       SELECT 1 FROM public.milestone_validation_requests
-       WHERE idea_id = v_idea_id
-     ) THEN
+END
+$m9r8_history_guard_assertion$;
+RESET ROLE;
+
+SET LOCAL ROLE javaneh_identity_executor;
+DO $m9r8_history_guard_read$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM public.ideas
+     WHERE id = pg_catalog.current_setting('test.m9r8_history_idea')::uuid
+  ) OR NOT EXISTS (
+    SELECT 1
+      FROM public.milestone_validation_requests
+     WHERE idea_id = pg_catalog.current_setting('test.m9r8_history_idea')::uuid
+  ) THEN
     RAISE EXCEPTION 'Blocked deletion modified the idea or its history';
   END IF;
 END
-$m9r8_history_guard_assertion$;
+$m9r8_history_guard_read$;
 RESET ROLE;
 
 ROLLBACK;

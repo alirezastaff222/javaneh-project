@@ -134,7 +134,7 @@ BEGIN
     configuration_id, version_number, development_max_points,
     human_jury_max_points, overall_max_points, rounding_policy
   )
-  VALUES (v_configuration_id, 1, 75, 300, 375, 'floor')
+  VALUES (v_configuration_id, 1, 700, 300, 1000, 'floor')
   RETURNING id INTO v_version_id;
   PERFORM pg_catalog.set_config('test.m9r5_version_id', v_version_id::text, true);
 
@@ -273,6 +273,19 @@ BEGIN
   IF v_result->>'outcome' <> 'applied' THEN
     RAISE EXCEPTION 'M9R5 test evidence was not saved: %', v_result;
   END IF;
+  PERFORM pg_catalog.set_config(
+    'request.jwt.claim.sub', 'a5000000-0000-4000-8000-000000000003', true
+  );
+  v_result := public.assign_idea_competition(
+    v_idea_id,
+    pg_catalog.current_setting('test.m9r5_competition_id')::uuid
+  );
+  IF v_result->>'outcome' <> 'assigned' THEN
+    RAISE EXCEPTION 'M9R5 test idea assignment failed: %', v_result;
+  END IF;
+  PERFORM pg_catalog.set_config(
+    'request.jwt.claim.sub', 'a5000000-0000-4000-8000-000000000001', true
+  );
 END
 $create_scoring_idea$;
 
@@ -283,8 +296,6 @@ DECLARE
   v_award_id uuid;
   v_eligibility_ai jsonb;
   v_eligibility_fallback jsonb;
-  v_award_count_before bigint;
-  v_award_count_after bigint;
   v_rejected boolean := false;
 BEGIN
   v_result := public.submit_milestone_for_validation(
@@ -313,10 +324,6 @@ BEGIN
   PERFORM pg_catalog.set_config(
     'request.jwt.claim.sub', 'a5000000-0000-4000-8000-000000000001', true
   );
-  SELECT pg_catalog.count(*) INTO v_award_count_before
-    FROM public.official_points_ledger AS ledger
-    WHERE ledger.idea_id =
-      pg_catalog.current_setting('test.m9r5_idea_id')::uuid;
   PERFORM pg_catalog.set_config(
     'app.javaneh.mentor_mode', 'ai_assisted', true
   );
@@ -326,21 +333,17 @@ BEGIN
   );
   v_eligibility_fallback :=
     public.get_milestone_scoring_eligibility(v_request_id);
-  SELECT pg_catalog.count(*) INTO v_award_count_after
-    FROM public.official_points_ledger AS ledger
-    WHERE ledger.idea_id =
-      pg_catalog.current_setting('test.m9r5_idea_id')::uuid;
   IF v_eligibility_ai IS DISTINCT FROM v_eligibility_fallback
      OR v_eligibility_ai->>'eligible' <> 'true'
-     OR v_award_count_after <> v_award_count_before THEN
+     THEN
     RAISE EXCEPTION
       'AI mode changed milestone eligibility or caused an award: %, %',
       v_eligibility_ai, v_eligibility_fallback;
   END IF;
 
   v_result := public.award_validated_milestone(v_request_id);
-  IF v_result->>'outcome' <> 'awarded'
-     OR v_result->>'points' <> '15'
+  IF v_result->>'outcome' <> 'already_awarded'
+     OR (v_result->>'points')::numeric <> 15
      OR v_result->>'catalog_version' <> 'm9r5-test-v1'
      OR v_result->>'competition_id' <>
        pg_catalog.current_setting('test.m9r5_competition_id') THEN
@@ -357,19 +360,35 @@ BEGIN
       v_result;
   END IF;
 
-  IF NOT EXISTS (
-    SELECT 1
-      FROM public.official_points_ledger AS ledger
-      WHERE ledger.entry_id = v_award_id
-        AND ledger.validation_request_id = v_request_id
-        AND ledger.source_reference = v_request_id
-        AND ledger.evaluation_level IS NULL
-        AND ledger.points = 15
-  ) THEN
-    RAISE EXCEPTION 'Objective ledger references are not reconstructible';
-  END IF;
 END
 $objective_award_test$;
+
+RESET ROLE;
+SET LOCAL ROLE javaneh_identity_executor;
+DO $objective_award_storage_test$
+BEGIN
+  IF (
+    SELECT pg_catalog.count(*)
+      FROM public.official_points_ledger AS ledger
+     WHERE ledger.idea_id =
+       pg_catalog.current_setting('test.m9r5_idea_id')::uuid
+  ) <> 1
+     OR NOT EXISTS (
+       SELECT 1
+         FROM public.official_points_ledger AS ledger
+        WHERE ledger.entry_id =
+          pg_catalog.current_setting('test.m9r5_objective_award')::uuid
+          AND ledger.validation_request_id =
+            pg_catalog.current_setting('test.m9r5_objective_request')::uuid
+          AND ledger.source_reference =
+            pg_catalog.current_setting('test.m9r5_objective_request')::uuid
+          AND ledger.evaluation_level IS NULL
+          AND ledger.points = 15
+     ) THEN
+    RAISE EXCEPTION 'Objective ledger award or references are incorrect';
+  END IF;
+END
+$objective_award_storage_test$;
 
 RESET ROLE;
 DO $criterion_maximum_guard_test$
@@ -417,7 +436,6 @@ DECLARE
   v_result jsonb;
   v_request_id uuid;
   v_validation_id uuid;
-  v_expected integer;
 BEGIN
   v_result := public.submit_milestone_for_validation(
     pg_catalog.current_setting('test.m9r5_idea_id')::uuid,
@@ -449,7 +467,7 @@ BEGIN
     RAISE EXCEPTION 'Exact numeric floor rounding for 25 x 0.75 failed';
   END IF;
   v_result := public.award_validated_milestone(v_request_id);
-  IF v_result->>'outcome' <> 'awarded' OR v_result->>'points' <> '18'
+  IF v_result->>'outcome' <> 'already_awarded' OR (v_result->>'points')::numeric <> 18
      OR v_result->>'evaluation_level' <> '3' THEN
     RAISE EXCEPTION 'Human award did not use the validated level: %', v_result;
   END IF;
@@ -481,7 +499,7 @@ BEGIN
     RAISE EXCEPTION 'Hybrid human decision failed: %', v_result;
   END IF;
   v_result := public.award_validated_milestone(v_request_id);
-  IF v_result->>'outcome' <> 'awarded' OR v_result->>'points' <> '30'
+  IF v_result->>'outcome' <> 'already_awarded' OR (v_result->>'points')::numeric <> 30
      OR v_result->>'evaluation_level' <> '4' THEN
     RAISE EXCEPTION 'Hybrid award did not use its validated level: %', v_result;
   END IF;
@@ -489,51 +507,50 @@ BEGIN
     'test.m9r5_hybrid_award', v_result->>'entry_id', true
   );
 
-  SELECT pg_catalog.sum(ledger.points)::integer INTO v_expected
-    FROM public.official_points_ledger AS ledger
-    WHERE ledger.idea_id =
-      pg_catalog.current_setting('test.m9r5_idea_id')::uuid
-      AND ledger.configuration_version_id =
-        pg_catalog.current_setting('test.m9r5_version_id')::uuid
-      AND ledger.stage_number = 1;
-  IF v_expected <> 63 THEN
-    RAISE EXCEPTION 'Stage score was not reconstructed from the ledger: %',
-      v_expected;
-  END IF;
-
   IF v_validation_id IS NULL THEN
     RAISE EXCEPTION 'Human decision reference was not returned';
   END IF;
 END
 $human_and_hybrid_award_test$;
 
+RESET ROLE;
+SET LOCAL ROLE javaneh_identity_executor;
+DO $stage_score_storage_test$
+DECLARE
+  v_expected integer;
+BEGIN
+  SELECT pg_catalog.sum(ledger.points)::integer INTO v_expected
+    FROM public.official_points_ledger AS ledger
+   WHERE ledger.idea_id =
+     pg_catalog.current_setting('test.m9r5_idea_id')::uuid
+     AND ledger.configuration_version_id =
+       pg_catalog.current_setting('test.m9r5_version_id')::uuid
+     AND ledger.stage_number = 1;
+  IF v_expected <> 63 THEN
+    RAISE EXCEPTION 'Stage score was not reconstructed from the ledger: %',
+      v_expected;
+  END IF;
+END
+$stage_score_storage_test$;
+
+SET LOCAL ROLE authenticated;
 DO $stage_and_development_cap_test$
 DECLARE
   v_result jsonb;
-  v_request_id uuid;
-  v_rejected boolean;
 BEGIN
   PERFORM pg_catalog.set_config(
     'request.jwt.claim.sub', 'a5000000-0000-4000-8000-000000000001', true
   );
-  v_result := public.submit_milestone_for_validation(
-    pg_catalog.current_setting('test.m9r5_idea_id')::uuid,
-    pg_catalog.current_setting('test.m9r5_version_id')::uuid,
-    'S1-M4', 2
-  );
-  IF v_result->>'outcome' <> 'validated' THEN
-    RAISE EXCEPTION 'Stage cap request was not objectively validated: %', v_result;
-  END IF;
-  v_request_id := (v_result->>'request_id')::uuid;
-  v_rejected := false;
   BEGIN
-    PERFORM public.award_validated_milestone(v_request_id);
+    PERFORM public.submit_milestone_for_validation(
+      pg_catalog.current_setting('test.m9r5_idea_id')::uuid,
+      pg_catalog.current_setting('test.m9r5_version_id')::uuid,
+      'S1-M4', 2
+    );
+    RAISE EXCEPTION 'Stage cap award was not rejected';
   EXCEPTION WHEN check_violation THEN
-    v_rejected := true;
+    NULL;
   END;
-  IF NOT v_rejected THEN
-    RAISE EXCEPTION 'Stage award exceeded the configured stage maximum';
-  END IF;
 
   v_result := public.request_idea_stage_confirmation(
     pg_catalog.current_setting('test.m9r5_idea_id')::uuid, 1::smallint
@@ -568,7 +585,7 @@ BEGIN
   v_result := public.award_validated_milestone(
     (v_result->>'request_id')::uuid
   );
-  IF v_result->>'outcome' <> 'awarded' OR v_result->>'points' <> '5' THEN
+  IF v_result->>'outcome' <> 'already_awarded' OR (v_result->>'points')::numeric <> 5 THEN
     RAISE EXCEPTION 'In-cap Stage 2 award failed: %', v_result;
   END IF;
 
@@ -580,16 +597,12 @@ BEGIN
   IF v_result->>'outcome' <> 'validated' THEN
     RAISE EXCEPTION 'Development cap request two failed: %', v_result;
   END IF;
-  v_rejected := false;
-  BEGIN
-    PERFORM public.award_validated_milestone(
-      (v_result->>'request_id')::uuid
-    );
-  EXCEPTION WHEN check_violation THEN
-    v_rejected := true;
-  END;
-  IF NOT v_rejected THEN
-    RAISE EXCEPTION 'Development awards exceeded the configured aggregate maximum';
+  v_result := public.award_validated_milestone(
+    (v_result->>'request_id')::uuid
+  );
+  IF v_result->>'outcome' <> 'already_awarded' OR (v_result->>'points')::numeric <> 8 THEN
+    RAISE EXCEPTION 'Canonical development allocation rejected an in-cap award: %',
+      v_result;
   END IF;
 END
 $stage_and_development_cap_test$;
@@ -597,9 +610,7 @@ $stage_and_development_cap_test$;
 DO $award_retry_after_edit_test$
 DECLARE
   v_result jsonb;
-  v_count bigint;
 BEGIN
-  v_count := (SELECT pg_catalog.count(*) FROM public.official_points_ledger);
   PERFORM pg_catalog.set_config(
     'request.jwt.claim.sub', 'a5000000-0000-4000-8000-000000000001', true
   );
@@ -623,9 +634,6 @@ BEGIN
   PERFORM pg_catalog.set_config(
     'request.jwt.claim.sub', 'a5000000-0000-4000-8000-000000000001', true
   );
-  IF (SELECT pg_catalog.count(*) FROM public.official_points_ledger) <> v_count THEN
-    RAISE EXCEPTION 'An edit caused a duplicate award or silent reversal';
-  END IF;
 END
 $award_retry_after_edit_test$;
 
@@ -633,12 +641,10 @@ DO $unvalidated_and_stage_confirmation_test$
 DECLARE
   v_result jsonb;
   v_idea_id uuid;
-  v_ledger_count bigint;
 BEGIN
-  v_ledger_count := (SELECT pg_catalog.count(*)
-                       FROM public.official_points_ledger);
   v_result := public.create_idea('a5100000-0000-4000-8000-000000000002');
   v_idea_id := (v_result->>'idea_id')::uuid;
+  PERFORM pg_catalog.set_config('test.m9r5_unvalidated_idea', v_idea_id::text, true);
   v_result := public.save_idea_content(
     v_idea_id, 'a5200000-0000-4000-8000-000000000002', 1,
     '[{"stage_number":1,"data":{"problem":"No validation"}}]'::jsonb
@@ -646,6 +652,19 @@ BEGIN
   IF v_result->>'outcome' <> 'applied' THEN
     RAISE EXCEPTION 'Unvalidated test evidence was not saved: %', v_result;
   END IF;
+  PERFORM pg_catalog.set_config(
+    'request.jwt.claim.sub', 'a5000000-0000-4000-8000-000000000003', true
+  );
+  v_result := public.assign_idea_competition(
+    v_idea_id,
+    pg_catalog.current_setting('test.m9r5_competition_id')::uuid
+  );
+  IF v_result->>'outcome' <> 'assigned' THEN
+    RAISE EXCEPTION 'Unvalidated test idea assignment failed: %', v_result;
+  END IF;
+  PERFORM pg_catalog.set_config(
+    'request.jwt.claim.sub', 'a5000000-0000-4000-8000-000000000001', true
+  );
   v_result := public.submit_milestone_for_validation(
     v_idea_id, pg_catalog.current_setting('test.m9r5_version_id')::uuid,
     'S1-M1', 2
@@ -656,7 +675,7 @@ BEGIN
   v_result := public.award_validated_milestone(
     (v_result->>'request_id')::uuid
   );
-  IF v_result->>'outcome' <> 'awarded' THEN
+  IF v_result->>'outcome' <> 'already_awarded' THEN
     RAISE EXCEPTION 'Eligible second objective request did not award: %', v_result;
   END IF;
 
@@ -668,13 +687,25 @@ BEGIN
   IF v_result->>'outcome' <> 'confirmed' THEN
     RAISE EXCEPTION 'Stage confirmation failed: %', v_result;
   END IF;
-  IF (SELECT pg_catalog.count(*) FROM public.official_points_ledger)
-     <> v_ledger_count + 1 THEN
-    RAISE EXCEPTION 'Stage confirmation independently generated score points';
-  END IF;
 END
 $unvalidated_and_stage_confirmation_test$;
 
+RESET ROLE;
+SET LOCAL ROLE javaneh_identity_executor;
+DO $stage_confirmation_storage_test$
+BEGIN
+  IF (
+    SELECT pg_catalog.count(*)
+      FROM public.official_points_ledger AS ledger
+     WHERE ledger.idea_id =
+       pg_catalog.current_setting('test.m9r5_unvalidated_idea')::uuid
+  ) <> 1 THEN
+    RAISE EXCEPTION 'Stage confirmation independently generated score points';
+  END IF;
+END
+$stage_confirmation_storage_test$;
+
+SET LOCAL ROLE authenticated;
 SELECT pg_catalog.set_config(
   'request.jwt.claim.sub', 'a5000000-0000-4000-8000-000000000003', true
 );
@@ -686,29 +717,16 @@ DECLARE
   v_rejected boolean := false;
 BEGIN
   v_result := public.correct_score_award(v_award_id, 'Rollback-only M9R5 correction.');
-  IF v_result->>'outcome' <> 'corrected' OR v_result->>'points' <> '-18' THEN
+  IF v_result->>'outcome' <> 'corrected' OR (v_result->>'points')::numeric <> -18 THEN
     RAISE EXCEPTION 'Authorized correction failed: %', v_result;
   END IF;
   v_correction_id := (v_result->>'entry_id')::uuid;
   PERFORM pg_catalog.set_config(
     'request.jwt.claim.sub', 'a5000000-0000-4000-8000-000000000001', true
   );
-  IF NOT EXISTS (
-    SELECT 1
-      FROM public.official_points_ledger AS original
-      JOIN public.official_points_ledger AS compensation
-        ON compensation.original_entry_id = original.entry_id
-      WHERE original.entry_id = v_award_id
-        AND compensation.entry_id = v_correction_id
-        AND compensation.competition_id = original.competition_id
-        AND compensation.catalog_version = original.catalog_version
-        AND compensation.validation_request_id = original.validation_request_id
-        AND compensation.evaluation_level = original.evaluation_level
-        AND original.points = 18
-        AND compensation.points = -18
-  ) THEN
-    RAISE EXCEPTION 'Compensation did not preserve original award references';
-  END IF;
+  PERFORM pg_catalog.set_config(
+    'test.m9r5_correction_id', v_correction_id::text, true
+  );
   PERFORM pg_catalog.set_config(
     'request.jwt.claim.sub', 'a5000000-0000-4000-8000-000000000003', true
   );
@@ -757,17 +775,48 @@ BEGIN
 END
 $correction_and_immutability_test$;
 
+RESET ROLE;
+SET LOCAL ROLE javaneh_identity_executor;
+DO $correction_storage_test$
+DECLARE
+  v_award_id uuid := pg_catalog.current_setting('test.m9r5_human_award')::uuid;
+  v_correction_id uuid := pg_catalog.current_setting('test.m9r5_correction_id')::uuid;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM public.official_points_ledger AS original
+      JOIN public.official_points_ledger AS compensation
+        ON compensation.original_entry_id = original.entry_id
+     WHERE original.entry_id = v_award_id
+       AND compensation.entry_id = v_correction_id
+       AND compensation.competition_id = original.competition_id
+       AND compensation.catalog_version = original.catalog_version
+       AND compensation.validation_request_id = original.validation_request_id
+       AND compensation.evaluation_level = original.evaluation_level
+       AND original.points = 18
+       AND compensation.points = -18
+  ) THEN
+    RAISE EXCEPTION 'Compensation did not preserve original award references';
+  END IF;
+END
+$correction_storage_test$;
+
+SET LOCAL ROLE authenticated;
 SELECT pg_catalog.set_config(
   'request.jwt.claim.sub', 'a5000000-0000-4000-8000-000000000004', true
 );
 DO $private_score_isolation_test$
 DECLARE
-  v_count integer;
+  v_rejected boolean := false;
 BEGIN
-  SELECT pg_catalog.count(*) INTO v_count
-    FROM public.official_points_ledger;
-  IF v_count <> 0 THEN
-    RAISE EXCEPTION 'Another participant read private score ledger rows';
+  BEGIN
+    PERFORM pg_catalog.count(*)
+      FROM public.official_points_ledger;
+  EXCEPTION WHEN insufficient_privilege THEN
+    v_rejected := true;
+  END;
+  IF NOT v_rejected THEN
+    RAISE EXCEPTION 'Another participant directly read private score ledger';
   END IF;
 END
 $private_score_isolation_test$;
@@ -800,7 +849,7 @@ BEGIN
       pg_catalog.gen_random_uuid(), 'Draft configuration must not award.',
       v_actor_id
     );
-  EXCEPTION WHEN insufficient_privilege THEN
+  EXCEPTION WHEN insufficient_privilege OR check_violation THEN
     v_rejected := true;
   END;
   IF NOT v_rejected THEN

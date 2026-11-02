@@ -27,6 +27,9 @@ import {
 import { shouldDispatchAfterConfirmation } from "@/lib/ai/mentor/classification-dispatch";
 import ClassificationPanel from "./classification-panel";
 import ParticipantScorecard from "./participant-scorecard";
+import MilestoneEvaluationControls from "./milestone-evaluation-controls";
+import JuryScoreSummary from "./jury-score-summary";
+import FinalResultSummary from "./final-result-summary";
 import DossierPreview, {
   DossierPreviewEntryPoint,
 } from "./dossier-preview";
@@ -2516,6 +2519,9 @@ export default function IdeasPage({
             )}
 
             <ParticipantScorecard key={selectedIdea.id} ideaId={selectedIdea.id} />
+            <JuryScoreSummary ideaId={selectedIdea.id} />
+            <FinalResultSummary ideaId={selectedIdea.id} />
+            <MilestoneEvaluationControls ideaId={selectedIdea.id} />
 
             {stagesError && (
               <div className="mb-6 rounded-xl bg-red-50 p-4 text-sm leading-7 text-red-900 dark:bg-red-950/40 dark:text-red-200">

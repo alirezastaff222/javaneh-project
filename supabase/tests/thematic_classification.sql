@@ -409,6 +409,20 @@ BEGIN
       v_result;
   END IF;
 
+  SET LOCAL ROLE javaneh_identity_executor;
+  UPDATE public.idea_classification_state
+     SET retry_after = pg_catalog.clock_timestamp() - interval '1 second'
+   WHERE idea_id = v_idea_id;
+  SET LOCAL ROLE service_role;
+  v_result := public.claim_idea_classification(
+    v_idea_id, v_owner_id, v_stage_1, v_stage_2,
+    'phase7.v1', 'phase7.classification.v1', v_retry
+  );
+  IF v_result->>'outcome' <> 'claimed' THEN
+    RAISE EXCEPTION 'Classification retry was not claimable after backoff: %',
+      v_result;
+  END IF;
+
   v_result := public.complete_idea_classification(
     v_idea_id, v_retry, 'phase7.v1', 'unknown_axis',
     ARRAY['domestic_production', 'economic_mutual_aid'],
@@ -488,6 +502,16 @@ BEGIN
 END
 $phase7_classifier_test$;
 
+SET LOCAL ROLE javaneh_identity_executor;
+UPDATE public.idea_classification_state
+   SET status = 'failed',
+       current_classification_id = NULL,
+       attempt_token = NULL,
+       lease_expires_at = NULL,
+       retry_after = pg_catalog.clock_timestamp() + interval '1 minute',
+       last_failure_category = 'timeout',
+       attempt_count = 1
+ WHERE idea_id = pg_catalog.current_setting('test.phase7_idea_id')::uuid;
 RESET ROLE;
 SET LOCAL ROLE authenticated;
 SELECT pg_catalog.set_config(

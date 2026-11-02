@@ -16,6 +16,8 @@ import {
   type FeedbackDraft,
 } from "@/lib/ideas/evaluator-dashboard-workflow";
 import { IDEA_STAGES } from "@/lib/ideas/stages";
+import MilestoneValidationQueue from "./milestone-validation-queue";
+import JuryPanel from "./jury-panel";
 
 type DossierState =
   | { kind: "closed" }
@@ -219,6 +221,8 @@ export function EvaluatorDashboard({
 
   return (
     <main className="mx-auto max-w-6xl space-y-6 p-6">
+      <MilestoneValidationQueue />
+      <JuryPanel />
       <header className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <p className="text-sm uppercase tracking-[0.2em] text-foreground/60">

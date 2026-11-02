@@ -116,6 +116,10 @@ DECLARE
   v_overall_points bigint;
   v_eligible boolean;
 BEGIN
+  IF NEW.entry_kind = 'award' AND NEW.source = 'human_jury' THEN
+    RETURN NEW;
+  END IF;
+
   IF TG_OP <> 'INSERT' THEN
     RAISE EXCEPTION 'Official points ledger entries are append-only'
       USING ERRCODE = '42501';

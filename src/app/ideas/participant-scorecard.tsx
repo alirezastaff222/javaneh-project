@@ -50,6 +50,10 @@ export function remainingStagePoints(points: number, maximumPoints: number): num
   return Math.max(0, maximumPoints - points);
 }
 
+function progressPercent(points: number, maximumPoints: number): number {
+  return Math.min(100, Math.round((points / maximumPoints) * 100));
+}
+
 export function StageScoreSummary({
   stageNumber,
   points,
@@ -59,14 +63,26 @@ export function StageScoreSummary({
   points: number;
   maximumPoints: number;
 }) {
+  const percent = progressPercent(points, maximumPoints);
   return (
-    <p className="flex flex-wrap justify-between gap-3 border-t border-foreground/10 py-2 text-sm">
+    <p className="border-t border-foreground/10 py-2 text-sm">
       <span>مرحله {stageNumber}</span>
       <span className="flex flex-wrap gap-x-3 tabular-nums">
         <span>کسب‌شده: {points}</span>
         <span>حداکثر: {maximumPoints}</span>
         <span>باقی‌مانده: {remainingStagePoints(points, maximumPoints)}</span>
       </span>
+      <span
+        className="mt-2 block h-2 overflow-hidden rounded-full bg-foreground/10"
+        role="progressbar"
+        aria-label={`پیشرفت امتیاز مرحله ${stageNumber}`}
+        aria-valuemin={0}
+        aria-valuemax={maximumPoints}
+        aria-valuenow={points}
+      >
+        <span className="block h-full rounded-full bg-foreground" style={{ width: `${percent}%` }} />
+      </span>
+      <span className="mt-1 block text-xs text-foreground/60">{percent}% پیشرفت امتیاز مرحله</span>
     </p>
   );
 }
@@ -114,7 +130,7 @@ export default function ParticipantScorecard({
   useEffect(() => {
     let active = true;
 
-    void (async () => {
+    async function load() {
       try {
         const parameters = new URLSearchParams({ ideaId });
         const response = await fetch(
@@ -135,10 +151,15 @@ export default function ParticipantScorecard({
       } catch {
         if (active) setState({ kind: "error" });
       }
-    })();
+    }
+
+    void load();
+    const refresh = () => void load();
+    window.addEventListener("participant-scorecard-refresh", refresh);
 
     return () => {
       active = false;
+      window.removeEventListener("participant-scorecard-refresh", refresh);
     };
   }, [ideaId]);
 
@@ -178,12 +199,39 @@ export default function ParticipantScorecard({
         </p>
       ) : (
         <>
-          <p className="mt-4 text-2xl font-semibold tabular-nums">
-            {state.scorecard.total_points} / {state.scorecard.maximum_points}
-            <span className="ms-2 text-sm font-normal text-foreground/60">
-              امتیاز توسعه
-            </span>
-          </p>
+          <div className="mt-4">
+            <p className="text-2xl font-semibold tabular-nums">
+              {state.scorecard.total_points} / {state.scorecard.maximum_points}
+              <span className="ms-2 text-sm font-normal text-foreground/60">
+                امتیاز توسعه
+              </span>
+            </p>
+            <div
+              className="mt-2 h-3 overflow-hidden rounded-full bg-foreground/10"
+              role="progressbar"
+              aria-label="پیشرفت امتیاز توسعه"
+              aria-valuemin={0}
+              aria-valuemax={state.scorecard.maximum_points}
+              aria-valuenow={state.scorecard.total_points}
+            >
+              <div
+                className="h-full rounded-full bg-foreground"
+                style={{
+                  width: `${progressPercent(
+                    state.scorecard.total_points,
+                    state.scorecard.maximum_points,
+                  )}%`,
+                }}
+              />
+            </div>
+            <p className="mt-1 text-xs text-foreground/60">
+              {remainingStagePoints(
+                state.scorecard.total_points,
+                state.scorecard.maximum_points,
+              )}{" "}
+              امتیاز توسعه باقی مانده است؛ فقط امتیازهای ثبت‌شده محاسبه می‌شوند.
+            </p>
+          </div>
 
           <div className="mt-4 grid gap-2 sm:grid-cols-3">
             {state.scorecard.stages.map((stage) => (

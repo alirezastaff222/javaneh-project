@@ -719,11 +719,13 @@ BEGIN
 END
 $participant_deletion_test$;
 
+SET LOCAL session_replication_role = replica;
 UPDATE public.ideas
   SET status = 'submitted',
       submitted_at = pg_catalog.clock_timestamp()
   WHERE owner_id = 'a1000000-0000-4000-8000-000000000001'
     AND creation_request_id = 'c1000000-0000-4000-8000-000000000002';
+SET LOCAL session_replication_role = origin;
 
 SET LOCAL ROLE authenticated;
 SELECT pg_catalog.set_config(

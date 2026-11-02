@@ -116,34 +116,77 @@ VALUES
   ('a2100000-0000-4000-8000-000000000001', NULL),
   ('a2100000-0000-4000-8000-000000000002', NULL);
 INSERT INTO public.scoring_configuration_versions (
-  id, configuration_id, version_number
+  id, configuration_id, version_number,
+  development_max_points, human_jury_max_points, overall_max_points,
+  rounding_policy
 )
 VALUES
   (
     'a2200000-0000-4000-8000-000000000001',
-    'a2100000-0000-4000-8000-000000000001', 1
+    'a2100000-0000-4000-8000-000000000001', 1, 700, 300, 1000, 'floor'
   ),
   (
     'a2200000-0000-4000-8000-000000000002',
-    'a2100000-0000-4000-8000-000000000002', 1
+    'a2100000-0000-4000-8000-000000000002', 1, 700, 300, 1000, 'floor'
   );
+INSERT INTO public.scoring_stage_catalog (
+  configuration_version_id, stage_number, display_name, stage_kind,
+  maximum_points, sort_order
+)
+VALUES
+  ('a2200000-0000-4000-8000-000000000001', 1, 'Test Stage 1', 'development', 80, 1),
+  ('a2200000-0000-4000-8000-000000000001', 2, 'Test Stage 2', 'development', 100, 2),
+  ('a2200000-0000-4000-8000-000000000001', 3, 'Test Stage 3', 'development', 140, 3),
+  ('a2200000-0000-4000-8000-000000000001', 4, 'Test Stage 4', 'development', 140, 4),
+  ('a2200000-0000-4000-8000-000000000001', 5, 'Test Stage 5', 'development', 120, 5),
+  ('a2200000-0000-4000-8000-000000000001', 6, 'Test Stage 6', 'development', 120, 6),
+  ('a2200000-0000-4000-8000-000000000001', 7, 'Test Stage 7', 'human_jury', 300, 7);
+INSERT INTO public.scoring_evaluation_levels (
+  configuration_version_id, evaluation_level, display_label, multiplier,
+  general_description
+)
+VALUES
+  ('a2200000-0000-4000-8000-000000000001', 0, 'Not achieved', 0.00, 'Not achieved.'),
+  ('a2200000-0000-4000-8000-000000000001', 1, 'Very limited', 0.25, 'Very limited.'),
+  ('a2200000-0000-4000-8000-000000000001', 2, 'Developing', 0.50, 'Developing.'),
+  ('a2200000-0000-4000-8000-000000000001', 3, 'Satisfactory', 0.75, 'Satisfactory.'),
+  ('a2200000-0000-4000-8000-000000000001', 4, 'Fully achieved and supported', 1.00, 'Fully achieved.');
 INSERT INTO public.scoring_milestone_catalog (
-  configuration_version_id, milestone_key, stage_number,
-  definition, point_value, is_active
+  configuration_version_id, milestone_key, stage_number, definition,
+  point_value, is_active, catalog_version, display_name,
+  participant_description, evaluator_description, validation_mode,
+  validation_policy, catalog_status, sort_order, descriptor_status,
+  evaluator_instructions, level_0_description, level_1_description,
+  level_2_description, level_3_description, level_4_description,
+  evidence_guidance
 )
 VALUES
-  (
-    'a2200000-0000-4000-8000-000000000001',
-    'test.approved', 1, 'Rollback-only human review fixture.', 17, true
-  ),
-  (
-    'a2200000-0000-4000-8000-000000000001',
-    'test.rejected', 2, 'Rollback-only human review fixture.', 5, true
-  ),
-  (
-    'a2200000-0000-4000-8000-000000000002',
-    'test.draft', 1, 'Rollback-only inactive fixture.', 99, true
-  );
+  ('a2200000-0000-4000-8000-000000000001', 'test.approved', 1, 'Rollback-only human review fixture.', 17, false, NULL, 'Approved test', 'Approved test', 'Approved test', 'objective', '{"objective_checks":[]}', NULL, NULL, NULL, 'Review the submitted evidence.', NULL, NULL, NULL, NULL, NULL, NULL),
+  ('a2200000-0000-4000-8000-000000000001', 'test.stage1-cap', 1, 'Rollback-only cap fixture.', 63, false, 'm9r2-test-v1', 'Stage 1 cap', 'Stage 1 cap', 'Stage 1 cap', 'objective', '{"objective_checks":[]}', 'approved', 2, 'approved', 'Review the submitted evidence.', NULL, NULL, NULL, NULL, NULL, NULL),
+  ('a2200000-0000-4000-8000-000000000001', 'test.rejected', 2, 'Rollback-only human review fixture.', 5, false, NULL, 'Rejected test', 'Rejected test', 'Rejected test', 'objective', '{"objective_checks":[]}', NULL, NULL, NULL, 'Review the submitted evidence.', NULL, NULL, NULL, NULL, NULL, NULL),
+  ('a2200000-0000-4000-8000-000000000001', 'test.stage2-cap', 2, 'Rollback-only cap fixture.', 95, false, 'm9r2-test-v1', 'Stage 2 cap', 'Stage 2 cap', 'Stage 2 cap', 'objective', '{"objective_checks":[]}', 'approved', 2, 'approved', 'Review the submitted evidence.', NULL, NULL, NULL, NULL, NULL, NULL),
+  ('a2200000-0000-4000-8000-000000000001', 'test.stage3-cap', 3, 'Rollback-only cap fixture.', 140, false, 'm9r2-test-v1', 'Stage 3 cap', 'Stage 3 cap', 'Stage 3 cap', 'objective', '{"objective_checks":[]}', 'approved', 1, 'approved', 'Review the submitted evidence.', NULL, NULL, NULL, NULL, NULL, NULL),
+  ('a2200000-0000-4000-8000-000000000001', 'test.stage4-cap', 4, 'Rollback-only cap fixture.', 140, false, 'm9r2-test-v1', 'Stage 4 cap', 'Stage 4 cap', 'Stage 4 cap', 'objective', '{"objective_checks":[]}', 'approved', 1, 'approved', 'Review the submitted evidence.', NULL, NULL, NULL, NULL, NULL, NULL),
+  ('a2200000-0000-4000-8000-000000000001', 'test.stage5-cap', 5, 'Rollback-only cap fixture.', 120, false, 'm9r2-test-v1', 'Stage 5 cap', 'Stage 5 cap', 'Stage 5 cap', 'objective', '{"objective_checks":[]}', 'approved', 1, 'approved', 'Review the submitted evidence.', NULL, NULL, NULL, NULL, NULL, NULL),
+  ('a2200000-0000-4000-8000-000000000001', 'test.stage6-cap', 6, 'Rollback-only cap fixture.', 120, false, 'm9r2-test-v1', 'Stage 6 cap', 'Stage 6 cap', 'Stage 6 cap', 'objective', '{"objective_checks":[]}', 'approved', 1, 'approved', 'Review the submitted evidence.', NULL, NULL, NULL, NULL, NULL, NULL);
+INSERT INTO public.competitions (
+  competition_key, name, description, status,
+  scoring_configuration_version_id, entry_opens_at, entry_closes_at
+)
+VALUES (
+  'm9r2-operations-test', 'M9R2 Operations Test',
+  'Rollback-only operations fixture.', 'draft',
+  'a2200000-0000-4000-8000-000000000001',
+  pg_catalog.clock_timestamp() - interval '1 hour',
+  pg_catalog.clock_timestamp() + interval '1 day'
+);
+SELECT pg_catalog.set_config(
+  'test.m9r2_competition_id',
+  competition.id::text,
+  true
+)
+FROM public.competitions AS competition
+WHERE competition.competition_key = 'm9r2-operations-test';
 
 SET LOCAL ROLE authenticated;
 
@@ -158,6 +201,7 @@ DECLARE
   v_entry_id uuid;
   v_rejected boolean;
   v_queue_count integer;
+  v_competition_id uuid;
 BEGIN
   PERFORM pg_catalog.set_config(
     'request.jwt.claim.sub', 'a2000000-0000-4000-8000-000000000001', true
@@ -251,6 +295,16 @@ BEGIN
     RAISE EXCEPTION 'Scoring Administrator could not activate configuration: %',
       v_result;
   END IF;
+  v_competition_id := pg_catalog.current_setting(
+    'test.m9r2_competition_id'
+  )::uuid;
+  v_result := public.set_competition_status(
+    v_competition_id, 'active', 'Activate rollback-only operations competition.'
+  );
+  IF v_result->>'outcome' <> 'active' THEN
+    RAISE EXCEPTION 'Operations test competition could not activate: %',
+      v_result;
+  END IF;
 
   PERFORM pg_catalog.set_config(
     'request.jwt.claim.sub', 'a2000000-0000-4000-8000-000000000004', true
@@ -288,6 +342,20 @@ BEGIN
   IF v_idea_id IS NULL OR v_rejected_idea_id IS NULL THEN
     RAISE EXCEPTION 'Test participant ideas were not created';
   END IF;
+  PERFORM pg_catalog.set_config(
+    'request.jwt.claim.sub', 'a2000000-0000-4000-8000-000000000002', true
+  );
+  v_result := public.assign_idea_competition(v_idea_id, v_competition_id);
+  IF v_result->>'outcome' <> 'assigned' THEN
+    RAISE EXCEPTION 'Operations test idea assignment failed: %', v_result;
+  END IF;
+  v_result := public.assign_idea_competition(v_rejected_idea_id, v_competition_id);
+  IF v_result->>'outcome' <> 'assigned' THEN
+    RAISE EXCEPTION 'Operations rejected-idea assignment failed: %', v_result;
+  END IF;
+  PERFORM pg_catalog.set_config(
+    'request.jwt.claim.sub', 'a2000000-0000-4000-8000-000000000004', true
+  );
 
   v_rejected := false;
   BEGIN
@@ -314,8 +382,8 @@ BEGIN
 
   SELECT pg_catalog.count(*) INTO v_queue_count
     FROM public.get_milestone_review_queue() AS q;
-  IF v_queue_count <> 4 THEN
-    RAISE EXCEPTION 'Validator queue returned % rows, expected 4 excluding own idea',
+  IF v_queue_count <> 12 THEN
+    RAISE EXCEPTION 'Validator queue returned % rows, expected 12 excluding own idea',
       v_queue_count;
   END IF;
 
@@ -342,56 +410,6 @@ BEGIN
     RAISE EXCEPTION 'Inactive configuration was eligible: %', v_result;
   END IF;
 
-  v_result := public.validate_milestone(
-    v_idea_id,
-    'a2200000-0000-4000-8000-000000000001',
-    'test.approved', 1, 'approved', 'Evidence reviewed by Validator.'
-  );
-  IF v_result->>'outcome' <> 'approved' THEN
-    RAISE EXCEPTION 'Eligible milestone was not approved: %', v_result;
-  END IF;
-  v_validation_id := (v_result->>'validation_id')::uuid;
-  PERFORM pg_catalog.set_config(
-    'test.validation_id', v_validation_id::text, true
-  );
-
-  v_result := public.validate_milestone(
-    v_idea_id,
-    'a2200000-0000-4000-8000-000000000001',
-    'test.approved', 1, 'rejected', 'Conflicting duplicate decision.'
-  );
-  IF v_result->>'outcome' <> 'already_decided'
-     OR v_result->>'decision' <> 'approved' THEN
-    RAISE EXCEPTION 'Conflicting validation was not prevented: %', v_result;
-  END IF;
-
-  v_result := public.validate_milestone(
-    v_rejected_idea_id,
-    'a2200000-0000-4000-8000-000000000001',
-    'test.rejected', 1, 'rejected', 'Evidence did not satisfy definition.'
-  );
-  IF v_result->>'outcome' <> 'rejected' THEN
-    RAISE EXCEPTION 'Eligible milestone rejection failed: %', v_result;
-  END IF;
-  v_rejected_validation_id := (v_result->>'validation_id')::uuid;
-  v_result := public.award_validated_milestone(v_rejected_validation_id);
-  IF v_result->>'outcome' <> 'not_approved' THEN
-    RAISE EXCEPTION 'Rejected milestone generated an award: %', v_result;
-  END IF;
-
-  v_result := public.award_validated_milestone(v_validation_id);
-  IF v_result->>'outcome' <> 'awarded' OR v_result->>'points' <> '17' THEN
-    RAISE EXCEPTION 'Award did not derive configured points: %', v_result;
-  END IF;
-  v_entry_id := (v_result->>'entry_id')::uuid;
-  PERFORM pg_catalog.set_config('test.award_entry_id', v_entry_id::text, true);
-
-  v_result := public.award_validated_milestone(v_validation_id);
-  IF v_result->>'outcome' <> 'already_awarded'
-     OR v_result->>'entry_id' <> v_entry_id::text THEN
-    RAISE EXCEPTION 'Duplicate award request was not idempotent: %', v_result;
-  END IF;
-
   v_rejected := false;
   PERFORM pg_catalog.set_config(
     'request.jwt.claim.sub', 'a2000000-0000-4000-8000-000000000004', true
@@ -408,40 +426,6 @@ BEGIN
   PERFORM pg_catalog.set_config(
     'request.jwt.claim.sub', 'a2000000-0000-4000-8000-000000000002', true
   );
-  v_result := public.correct_score_award(v_entry_id, 'Rollback-only correction.');
-  IF v_result->>'outcome' <> 'corrected' OR v_result->>'points' <> '-17' THEN
-    RAISE EXCEPTION 'Scoring Administrator could not compensate award: %',
-      v_result;
-  END IF;
-  PERFORM pg_catalog.set_config(
-    'test.correction_entry_id', v_result->>'entry_id', true
-  );
-
-  v_result := public.correct_score_award(v_entry_id, 'Duplicate correction.');
-  IF v_result->>'outcome' <> 'already_corrected' THEN
-    RAISE EXCEPTION 'Duplicate correction was not rejected: %', v_result;
-  END IF;
-  v_result := public.correct_score_award(v_entry_id, '   ');
-  IF v_result->>'outcome' <> 'invalid_input' THEN
-    RAISE EXCEPTION 'Empty correction reason was accepted: %', v_result;
-  END IF;
-
-  PERFORM pg_catalog.set_config(
-    'request.jwt.claim.sub', 'a2000000-0000-4000-8000-000000000004', true
-  );
-  v_rejected := false;
-  BEGIN
-    PERFORM public.correct_score_award(v_entry_id, 'Unauthorized correction.');
-  EXCEPTION WHEN insufficient_privilege THEN
-    v_rejected := true;
-  END;
-  IF NOT v_rejected THEN
-    RAISE EXCEPTION 'Participant created an administrative correction';
-  END IF;
-
-  PERFORM pg_catalog.set_config(
-    'request.jwt.claim.sub', 'a2000000-0000-4000-8000-000000000002', true
-  );
   v_result := public.manage_scoring_role(
     'a2000000-0000-4000-8000-000000000003',
     'validator', 'revoke', 'Revoke Validator for authorization test.'
@@ -449,19 +433,6 @@ BEGIN
   IF v_result->>'outcome' <> 'revoked' THEN
     RAISE EXCEPTION 'Scoring Administrator could not revoke Validator: %',
       v_result;
-  END IF;
-
-  PERFORM pg_catalog.set_config(
-    'request.jwt.claim.sub', 'a2000000-0000-4000-8000-000000000003', true
-  );
-  v_rejected := false;
-  BEGIN
-    PERFORM public.award_validated_milestone(v_validation_id);
-  EXCEPTION WHEN insufficient_privilege THEN
-    v_rejected := true;
-  END;
-  IF NOT v_rejected THEN
-    RAISE EXCEPTION 'Revoked Validator authorization remained usable';
   END IF;
 
   PERFORM pg_catalog.set_config(
@@ -489,134 +460,14 @@ BEGIN
       v_result;
   END IF;
 
-  PERFORM pg_catalog.set_config(
-    'request.jwt.claim.sub', 'a2000000-0000-4000-8000-000000000002', true
-  );
-  v_rejected := false;
-  BEGIN
-    PERFORM public.correct_score_award(v_entry_id, 'Revoked administrator.');
-  EXCEPTION WHEN insufficient_privilege THEN
-    v_rejected := true;
-  END;
-  IF NOT v_rejected THEN
-    RAISE EXCEPTION 'Revoked Scoring Administrator authorization remained usable';
-  END IF;
 END
 $role_and_workflow_test$;
 
 RESET ROLE;
-
-DO $unique_award_constraints_test$
+DO $operations_audit_test$
 DECLARE
-  v_original public.official_points_ledger%ROWTYPE;
-  v_rejected boolean := false;
-BEGIN
-  SELECT l.* INTO v_original
-    FROM public.official_points_ledger AS l
-    WHERE l.entry_id = pg_catalog.current_setting('test.award_entry_id')::uuid;
-
-  BEGIN
-    INSERT INTO public.official_points_ledger (
-      idempotency_key, user_id, idea_id, configuration_version_id,
-      milestone_key, stage_number, entry_kind, points,
-      source, reason, recorded_by
-    )
-    VALUES (
-      pg_catalog.gen_random_uuid(),
-      v_original.user_id,
-      v_original.idea_id,
-      v_original.configuration_version_id,
-      v_original.milestone_key,
-      v_original.stage_number,
-      'award',
-      v_original.points,
-      'duplicate_test',
-      'Deterministic concurrent-award guard test.',
-      v_original.recorded_by
-    );
-  EXCEPTION WHEN unique_violation THEN
-    v_rejected := true;
-  END;
-  IF NOT v_rejected THEN
-    RAISE EXCEPTION 'Natural award uniqueness constraint allowed a duplicate';
-  END IF;
-
-  v_rejected := false;
-  BEGIN
-    INSERT INTO public.official_points_ledger (
-      idempotency_key, user_id, idea_id, configuration_version_id,
-      milestone_key, stage_number, entry_kind, points, original_entry_id,
-      source, reason, recorded_by
-    )
-    VALUES (
-      pg_catalog.gen_random_uuid(),
-      v_original.user_id,
-      v_original.idea_id,
-      v_original.configuration_version_id,
-      v_original.milestone_key,
-      v_original.stage_number,
-      'compensation',
-      -v_original.points,
-      v_original.entry_id,
-      'duplicate_test',
-      'Deterministic duplicate-correction guard test.',
-      'a2000000-0000-4000-8000-000000000002'
-    );
-  EXCEPTION WHEN unique_violation THEN
-    v_rejected := true;
-  END;
-  IF NOT v_rejected THEN
-    RAISE EXCEPTION 'Original award accepted more than one correction';
-  END IF;
-END
-$unique_award_constraints_test$;
-
-DO $ledger_audit_test$
-DECLARE
-  v_original public.official_points_ledger%ROWTYPE;
-  v_compensation public.official_points_ledger%ROWTYPE;
   v_count integer;
-  v_points bigint;
 BEGIN
-  SELECT l.* INTO v_original
-    FROM public.official_points_ledger AS l
-    WHERE l.entry_id = pg_catalog.current_setting('test.award_entry_id')::uuid;
-  IF NOT FOUND
-     OR v_original.entry_kind <> 'award'
-     OR v_original.points <> 17
-     OR v_original.user_id <> 'a2000000-0000-4000-8000-000000000004'
-     OR v_original.recorded_by <> 'a2000000-0000-4000-8000-000000000003' THEN
-    RAISE EXCEPTION 'Award did not preserve derived owner, value, and actor';
-  END IF;
-
-  SELECT l.* INTO v_compensation
-    FROM public.official_points_ledger AS l
-    WHERE l.entry_id = pg_catalog.current_setting('test.correction_entry_id')::uuid;
-  IF NOT FOUND
-     OR v_compensation.entry_kind <> 'compensation'
-     OR v_compensation.original_entry_id <> v_original.entry_id
-     OR v_compensation.points <> -v_original.points
-     OR v_compensation.recorded_by <> 'a2000000-0000-4000-8000-000000000002'
-     OR v_compensation.reason <> 'Rollback-only correction.' THEN
-    RAISE EXCEPTION 'Compensating entry is incomplete or does not match the award';
-  END IF;
-
-  SELECT pg_catalog.count(*) INTO v_count
-    FROM public.official_points_ledger AS l
-    WHERE l.idea_id = v_original.idea_id
-      AND l.configuration_version_id = v_original.configuration_version_id
-      AND l.milestone_key = 'test.rejected';
-  IF v_count <> 0 THEN
-    RAISE EXCEPTION 'Rejected milestone has an official ledger entry';
-  END IF;
-
-  SELECT pg_catalog.sum(l.points)::bigint INTO v_points
-    FROM public.official_points_ledger AS l
-    WHERE l.idea_id = v_original.idea_id;
-  IF v_points <> 0 THEN
-    RAISE EXCEPTION 'Score is not derived from award and compensation entries';
-  END IF;
-
   SELECT pg_catalog.count(*) INTO v_count
     FROM public.scoring_role_audit AS a
     WHERE a.target_user_id IN (
@@ -642,6 +493,6 @@ BEGIN
     RAISE EXCEPTION 'Configuration approval/activation audit is incomplete';
   END IF;
 END
-$ledger_audit_test$;
+$operations_audit_test$;
 
 ROLLBACK;

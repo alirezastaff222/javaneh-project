@@ -412,7 +412,7 @@ BEGIN
     RAISE EXCEPTION 'Pending validation must remain separate from net awarded points';
   END IF;
 
-  IF (SELECT pg_catalog.sum((item.value->>'points')::integer)
+  IF (SELECT pg_catalog.sum((item.value->>'points')::numeric)
         FROM pg_catalog.jsonb_array_elements(v_result->'history') AS item(value))
        <> 12
      OR pg_catalog.jsonb_array_length(v_result->'history') <> 2 THEN
