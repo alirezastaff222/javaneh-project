@@ -1,11 +1,18 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { getSupabaseEnvironment } from "@/lib/supabase/env";
 import { buildConfirmationRedirect, sanitizeReturnTo } from "@/lib/supabase/auth";
 
 type AuthMode = "sign-in" | "sign-up";
+
+function normalizeDigits(value: string): string {
+  return value
+    .replace(/[۰-۹]/g, (digit) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(digit)))
+    .replace(/[٠-٩]/g, (digit) => String("٠١٢٣٤٥٦٧٨٩".indexOf(digit)));
+}
 
 export default function AuthForm({
   mode,
@@ -17,7 +24,10 @@ export default function AuthForm({
   initialError?: string;
 }) {
   const router = useRouter();
-  const supabase = useMemo(() => createClient(), []);
+  const isSignUp = mode === "sign-up";
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [nationalId, setNationalId] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -30,25 +40,41 @@ export default function AuthForm({
     setError(null);
     setMessage(null);
 
+    const normalizedNationalId = normalizeDigits(nationalId);
+    if (isSignUp && !/^\d{10}$/.test(normalizedNationalId)) {
+      setBusy(false);
+      setError("کد ملی باید دقیقاً ۱۰ رقم باشد.");
+      return;
+    }
+
     let result;
     try {
-      result =
-        mode === "sign-up"
-          ? await supabase.auth.signUp({
-              email,
-              password,
-              options: {
-                emailRedirectTo: buildConfirmationRedirect(
-                  window.location.origin,
-                  returnTo,
-                  process.env.NEXT_PUBLIC_SITE_URL,
-                ),
+      getSupabaseEnvironment();
+      const supabase = createClient();
+      result = isSignUp
+        ? await supabase.auth.signUp({
+            email,
+            password,
+            options: {
+              data: {
+                first_name: firstName.trim(),
+                last_name: lastName.trim(),
               },
-            })
-          : await supabase.auth.signInWithPassword({ email, password });
-    } catch (error) {
+              emailRedirectTo: buildConfirmationRedirect(
+                window.location.origin,
+                returnTo,
+                process.env.NEXT_PUBLIC_SITE_URL,
+              ),
+            },
+          })
+        : await supabase.auth.signInWithPassword({ email, password });
+    } catch (caughtError) {
       setBusy(false);
-      if (error instanceof Error && error.message.includes("NEXT_PUBLIC_SITE_URL")) {
+      if (caughtError instanceof Error && caughtError.message.includes("NEXT_PUBLIC_SUPABASE")) {
+        setError("تنظیمات Supabase کامل نیست. متغیرهای NEXT_PUBLIC_SUPABASE_URL و NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY را در فایل محیطی برنامه تنظیم و سرور را دوباره راه‌اندازی کنید.");
+        return;
+      }
+      if (caughtError instanceof Error && caughtError.message.includes("NEXT_PUBLIC_SITE_URL")) {
         setError("نشانی سایت برای پیوند تأیید ایمیل به‌درستی پیکربندی نشده است.");
         return;
       }
@@ -59,17 +85,15 @@ export default function AuthForm({
     setBusy(false);
     if (result.error) {
       setError(
-        mode === "sign-up"
-          ? "ثبت‌نام انجام نشد. ایمیل و گذرواژه را بررسی کنید."
+        isSignUp
+          ? "ثبت‌نام انجام نشد. ایمیل و گذرواژه را بررسی کنید؛ ممکن است این ایمیل قبلاً ثبت شده باشد."
           : "ایمیل یا گذرواژه نادرست است.",
       );
       return;
     }
 
-    if (mode === "sign-up" && !result.data.session) {
-      setMessage(
-        "لینک تأیید به ایمیل شما ارسال شد. پس از تأیید، برای ادامه به جوانه بازگردید.",
-      );
+    if (isSignUp && !result.data.session) {
+      setMessage("حساب شما ایجاد شد. لینک تأیید به ایمیلتان ارسال شده است؛ پس از تأیید، برای تکمیل ایده به جوانه بازمی‌گردید.");
       return;
     }
 
@@ -83,11 +107,64 @@ export default function AuthForm({
   }
 
   return (
-    <form onSubmit={submit} className="space-y-5">
+    <form onSubmit={submit} className="space-y-4" dir="rtl">
+      {isSignUp && (
+        <>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor="signup-first-name" className="auth-label">نام</label>
+              <input
+                id="signup-first-name"
+                name="firstName"
+                autoComplete="given-name"
+                required
+                value={firstName}
+                onChange={(event) => setFirstName(event.target.value)}
+                className="auth-input"
+              />
+            </div>
+            <div>
+              <label htmlFor="signup-last-name" className="auth-label">نام خانوادگی</label>
+              <input
+                id="signup-last-name"
+                name="lastName"
+                autoComplete="family-name"
+                required
+                value={lastName}
+                onChange={(event) => setLastName(event.target.value)}
+                className="auth-input"
+              />
+            </div>
+          </div>
+          <div>
+            <label htmlFor="signup-national-id" className="auth-label">کد ملی</label>
+            <input
+              id="signup-national-id"
+              name="nationalId"
+              inputMode="numeric"
+              autoComplete="off"
+              maxLength={10}
+              dir="ltr"
+              required
+              value={nationalId}
+              onChange={(event) => {
+                const digits = normalizeDigits(event.target.value).replace(/\D/g, "").slice(0, 10);
+                setNationalId(digits);
+              }}
+              aria-describedby="national-id-hint"
+              className="auth-input text-left"
+            />
+            <p id="national-id-hint" className="mt-2 text-xs leading-5 text-white/45">
+              ۱۰ رقم؛ ارقام فارسی و انگلیسی پذیرفته می‌شوند.
+            </p>
+            <p className="mt-1 text-xs leading-5 text-white/40">
+              به‌دلیل نبود فضای ذخیره‌سازی امن پروفایل در پایگاه دادهٔ فعلی، کد ملی اعتبارسنجی می‌شود اما به Supabase ارسال یا ذخیره نمی‌شود.
+            </p>
+          </div>
+        </>
+      )}
       <div>
-        <label htmlFor="email" className="block text-sm font-medium">
-          ایمیل
-        </label>
+        <label htmlFor="email" className="auth-label">ایمیل</label>
         <input
           id="email"
           name="email"
@@ -96,39 +173,31 @@ export default function AuthForm({
           autoComplete="email"
           value={email}
           onChange={(event) => setEmail(event.target.value)}
-          className="mt-2 min-h-11 w-full rounded-lg border border-foreground/20 bg-background px-3 text-left"
+          className="auth-input text-left"
           dir="ltr"
         />
       </div>
       <div>
-        <label htmlFor="password" className="block text-sm font-medium">
-          گذرواژه
-        </label>
+        <label htmlFor="password" className="auth-label">گذرواژه</label>
         <input
           id="password"
           name="password"
           type="password"
           required
           minLength={6}
-          autoComplete={mode === "sign-up" ? "new-password" : "current-password"}
+          autoComplete={isSignUp ? "new-password" : "current-password"}
           value={password}
           onChange={(event) => setPassword(event.target.value)}
-          className="mt-2 min-h-11 w-full rounded-lg border border-foreground/20 bg-background px-3 text-left"
+          className="auth-input text-left"
           dir="ltr"
         />
+        {isSignUp && <p className="mt-2 text-xs text-white/40">حداقل ۶ نویسه</p>}
       </div>
-      {(error ?? initialError) && (
-        <p role="alert" className="text-sm text-red-700 dark:text-red-300">
-          {error ?? initialError}
-        </p>
-      )}
-      {message && <p role="status" className="text-sm text-green-700 dark:text-green-300">{message}</p>}
-      <button
-        type="submit"
-        disabled={busy}
-        className="min-h-11 w-full rounded-lg bg-foreground px-4 font-medium text-background disabled:opacity-60"
-      >
-        {busy ? "در حال پردازش…" : mode === "sign-up" ? "ایجاد حساب" : "ورود"}
+      {(error ?? initialError) && <p role="alert" className="auth-error">{error ?? initialError}</p>}
+      {message && <p role="status" className="auth-success">{message}</p>}
+      <button type="submit" disabled={busy} className="auth-primary-button">
+        {busy ? "در حال پردازش…" : isSignUp ? "ایجاد حساب و ادامه" : "ورود"}
+        {!busy && <span aria-hidden="true">←</span>}
       </button>
     </form>
   );
