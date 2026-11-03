@@ -21,6 +21,7 @@ type SavedIntake = {
   step: IntakeStep;
   operation: IntakeRegistrationOperation | null;
   registeredIdeaId: string | null;
+  demoComplete?: boolean;
 };
 
 const intakeStorageEvent = "javaneh:intake-storage-change";
@@ -98,6 +99,7 @@ function parseSavedIntake(value: string | null): SavedIntake | null {
       step: parsed.step,
       operation,
       registeredIdeaId: parsed.registeredIdeaId,
+      demoComplete: parsed.demoComplete === true,
     };
   } catch {
     return null;
@@ -171,13 +173,18 @@ function registrationErrorMessage(error: unknown): string {
 export default function IntakeFlow({
   initialIdea,
   participantId,
+  demo = false,
 }: {
   initialIdea: string;
   participantId: string;
+  demo?: boolean;
 }) {
   const router = useRouter();
-  const supabase = useMemo(() => createClient(), []);
-  const rpcClient = useMemo(() => createIntakeRpcClient(supabase), [supabase]);
+  const supabase = useMemo(() => (demo ? null : createClient()), [demo]);
+  const rpcClient = useMemo(
+    () => (supabase ? createIntakeRpcClient(supabase) : null),
+    [supabase],
+  );
   const key = storageKey(participantId);
   const subscribe = useMemo(
     () => (notify: () => void) => {
@@ -211,14 +218,16 @@ export default function IntakeFlow({
     step: 0,
     operation: null,
     registeredIdeaId: null,
+    demoComplete: false,
   };
   const session =
     localOverride ?? parseSavedIntake(savedValue) ?? initialSession;
-  const { answers, step, operation, registeredIdeaId } = session;
+  const { answers, step, operation, registeredIdeaId, demoComplete = false } = session;
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [storageError, setStorageError] = useState("");
 
+  const completed = demo ? demoComplete : registeredIdeaId !== null;
   const operationLocked = operation?.ideaId !== null && operation !== null;
   const progress = step === 0 ? 50 : 100;
 
@@ -277,7 +286,16 @@ export default function IntakeFlow({
   }
 
   async function submitInitialIdea(): Promise<void> {
-    if (submitting || registeredIdeaId || !validateStep()) return;
+    if (submitting || completed || !validateStep()) return;
+    if (demo) {
+      persistSession({ ...session, demoComplete: true });
+      setError("");
+      return;
+    }
+    if (!rpcClient) {
+      setError("اتصال ثبت ایده در دسترس نیست. دوباره صفحه را بارگذاری کنید.");
+      return;
+    }
     let activeOperation = operation;
     if (!activeOperation) {
       activeOperation = {
@@ -382,8 +400,8 @@ export default function IntakeFlow({
             <span className="home-mark" aria-hidden="true">J</span>
             <span className="text-sm font-semibold text-white">جوانه</span>
           </Link>
-          <Link href="/ideas" className="text-sm text-white/60 underline underline-offset-4 hover:text-white">
-            ایده‌های من
+          <Link href={demo ? "/" : "/ideas"} className="text-sm text-white/60 underline underline-offset-4 hover:text-white">
+            {demo ? "بازگشت به صفحهٔ اصلی" : "ایده‌های من"}
           </Link>
         </header>
 
@@ -393,23 +411,27 @@ export default function IntakeFlow({
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <p className="intake-eyebrow text-xs font-medium">
-                    {registeredIdeaId
-                      ? "ایده در فضای کار شما ذخیره شد"
+                    {completed
+                      ? demo
+                        ? "پایان نسخهٔ آزمایشی"
+                        : "ایده در فضای کار شما ذخیره شد"
                       : `شناخت اولیه · گام ${step + 1} از ۲`}
                   </p>
                   <h1 className="mt-1.5 text-lg font-semibold text-white sm:text-xl">
-                    {registeredIdeaId
-                      ? "از ایدهٔ اولیه تا قدم بعدی"
+                    {completed
+                      ? demo
+                        ? "ایدهٔ آزمایشی شما آماده است"
+                        : "از ایدهٔ اولیه تا قدم بعدی"
                       : step === 0
                         ? "ایدهٔ اولیه‌تان چیست؟"
                         : "می‌خواهید چه مسئله‌ای را بهتر کنید؟"}
                   </h1>
                 </div>
-                {!registeredIdeaId && (
+                {!completed && (
                   <span className="shrink-0 text-xs text-white/50">حدود ۵ دقیقه</span>
                 )}
               </div>
-              {!registeredIdeaId && (
+              {!completed && (
                 <div
                   className="intake-progress mt-4"
                   role="progressbar"
@@ -424,32 +446,47 @@ export default function IntakeFlow({
             </div>
 
             <div className="px-5 py-6 sm:px-8 sm:py-8">
-              {registeredIdeaId ? (
+              {completed ? (
                 <div className="space-y-5">
                   <p className="text-sm leading-7 text-white/70">
-                    «{answers.title.trim()}» ذخیره شد و تعریف اولیهٔ مسئله‌اش را تأیید کردید. این ثبت اولیه به معنی ارسال نهایی یا ارزیابی انسانی نیست.
+                    {demo
+                      ? `«${answers.title.trim()}» در نسخهٔ آزمایشی ثبت شد. پاسخ‌ها فقط در همین تب نگهداری می‌شوند و به حساب کاربری یا پایگاه داده ارسال نشده‌اند. با بستن تب، این اطلاعات از بین می‌روند.`
+                      : `«${answers.title.trim()}» ذخیره شد و تعریف اولیهٔ مسئله‌اش را تأیید کردید. این ثبت اولیه به معنی ارسال نهایی یا ارزیابی انسانی نیست.`}
                   </p>
                   <div className="intake-review rounded-xl p-4">
                     <p className="text-xs text-white/45">مرحلهٔ بعدی</p>
                     <p className="mt-1 text-sm leading-7 text-white/80">
-                      شناسایی افراد، گروه‌ها، توانمندی‌ها و منابعی که می‌توانند به ایده کمک کنند.
+                      {demo
+                        ? "برای ذخیرهٔ دائمی ایده‌ها و ادامهٔ مسیر، بعداً می‌توانید وارد حساب کاربری شوید."
+                        : "شناسایی افراد، گروه‌ها، توانمندی‌ها و منابعی که می‌توانند به ایده کمک کنند."}
                     </p>
                   </div>
                   <div className="grid gap-3">
-                    <button
-                      type="button"
-                      onClick={continueWithMentor}
-                      className="home-submit inline-flex min-h-12 items-center justify-center rounded-xl px-5 text-sm font-semibold text-[#07120d]"
-                    >
-                      ادامهٔ همین ایده با منتور هوشمند
-                    </button>
-                    <button
-                      type="button"
-                      onClick={continueLater}
-                      className="intake-final-choice min-h-11"
-                    >
-                      بعداً ادامه می‌دهم
-                    </button>
+                    {demo ? (
+                      <Link
+                        href="/auth/sign-in?returnTo=%2Fideas"
+                        className="home-submit inline-flex min-h-12 items-center justify-center rounded-xl px-5 text-sm font-semibold text-[#07120d]"
+                      >
+                        ورود برای ذخیرهٔ دائمی ایده‌ها
+                      </Link>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={continueWithMentor}
+                          className="home-submit inline-flex min-h-12 items-center justify-center rounded-xl px-5 text-sm font-semibold text-[#07120d]"
+                        >
+                          ادامهٔ همین ایده با منتور هوشمند
+                        </button>
+                        <button
+                          type="button"
+                          onClick={continueLater}
+                          className="intake-final-choice min-h-11"
+                        >
+                          بعداً ادامه می‌دهم
+                        </button>
+                      </>
+                    )}
                     <button
                       type="button"
                       onClick={startAnotherIdea}
@@ -458,9 +495,11 @@ export default function IntakeFlow({
                       ثبت یک ایدهٔ جدید
                     </button>
                   </div>
-                  <p className="text-xs leading-6 text-white/45">
-                    ادامهٔ هوشمند اختیاری است؛ در فضای کار هم می‌توانید بدون AI پیش بروید.
-                  </p>
+                  {!demo && (
+                    <p className="text-xs leading-6 text-white/45">
+                      ادامهٔ هوشمند اختیاری است؛ در فضای کار هم می‌توانید بدون AI پیش بروید.
+                    </p>
+                  )}
                 </div>
               ) : (
                 <>
@@ -552,7 +591,9 @@ export default function IntakeFlow({
                         />
                       </div>
                       <div className="intake-demo-note rounded-xl px-4 py-3 text-xs leading-6">
-                        با انتخاب «ثبت اولیه»، همین پاسخ‌ها به‌عنوان پیش‌نویس ایده ذخیره و مرحلهٔ تعریف مسئله برای ادامه باز می‌شود. هنوز چیزی برای ارزیابی انسانی ارسال نمی‌شود.
+                        {demo
+                          ? "این نسخهٔ آزمایشی بدون ورود و بدون اتصال به پایگاه داده اجرا می‌شود. پاسخ‌ها فقط تا وقتی این تب باز است نگهداری می‌شوند."
+                          : "با انتخاب «ثبت اولیه»، همین پاسخ‌ها به‌عنوان پیش‌نویس ایده ذخیره و مرحلهٔ تعریف مسئله برای ادامه باز می‌شود. هنوز چیزی برای ارزیابی انسانی ارسال نمی‌شود."}
                       </div>
                     </div>
                   )}
@@ -597,11 +638,13 @@ export default function IntakeFlow({
                       <button
                         type="button"
                         onClick={() => void submitInitialIdea()}
-                        disabled={submitting || registeredIdeaId !== null}
+                        disabled={submitting || completed}
                         className="home-submit inline-flex min-h-11 items-center justify-center rounded-xl px-5 text-sm font-semibold text-[#07120d] disabled:opacity-50"
                       >
                         {submitting
-                          ? "در حال ذخیره و تأیید مرحله…"
+                          ? demo
+                            ? "در حال ثبت…"
+                            : "در حال ذخیره و تأیید مرحله…"
                           : operation?.ideaId
                             ? "تلاش دوباره برای تکمیل ثبت"
                             : "ثبت اولیه و ادامه"}

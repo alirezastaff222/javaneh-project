@@ -5,7 +5,7 @@ import { buildAuthPath } from "@/lib/supabase/auth";
 import { createClient } from "@/lib/supabase/server";
 
 export default function IdeaIntakePage(props: {
-  searchParams: Promise<{ seed?: string }>;
+  searchParams: Promise<{ seed?: string; demo?: string }>;
 }) {
   return (
     <Suspense
@@ -23,10 +23,20 @@ export default function IdeaIntakePage(props: {
 async function IntakeContent({
   searchParams,
 }: {
-  searchParams: Promise<{ seed?: string }>;
+  searchParams: Promise<{ seed?: string; demo?: string }>;
 }) {
   const params = await searchParams;
   const initialIdea = typeof params.seed === "string" ? params.seed.trim().slice(0, 4000) : "";
+  if (params.demo === "1") {
+    return (
+      <IntakeFlow
+        initialIdea={initialIdea}
+        participantId="guest-demo"
+        demo
+      />
+    );
+  }
+
   const supabase = await createClient();
   const {
     data: { user },

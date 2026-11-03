@@ -3,6 +3,13 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getSupabaseEnvironment } from "@/lib/supabase/env";
 
 export async function proxy(request: NextRequest) {
+  if (
+    request.nextUrl.pathname === "/ideas/intake" &&
+    request.nextUrl.searchParams.get("demo") === "1"
+  ) {
+    return NextResponse.next();
+  }
+
   const { url, publishableKey } = getSupabaseEnvironment();
   const response = NextResponse.next({ request });
   const supabase = createServerClient(url, publishableKey, {

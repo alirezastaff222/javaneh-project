@@ -102,7 +102,7 @@ async function HomeContent({
               Javaneh helps people turn the social challenges they see every day into thoughtful, workable ideas for their communities.
             </p>
 
-            <form action="/auth/sign-up" method="get" className="home-glass mt-7 w-full max-w-[34rem] rounded-2xl p-3 text-left sm:mt-8 sm:p-4">
+            <form action="/ideas/intake?demo=1" method="get" className="home-glass mt-7 w-full max-w-[34rem] rounded-2xl p-3 text-left sm:mt-8 sm:p-4">
               <div className="mb-2 flex items-center justify-between gap-3 px-1.5">
                 <label htmlFor="first-idea" className="text-xs font-medium text-white/75 sm:text-sm">
                   What would you like to change?
