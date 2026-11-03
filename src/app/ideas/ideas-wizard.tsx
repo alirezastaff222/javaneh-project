@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { User } from "@supabase/supabase-js";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
@@ -223,7 +229,10 @@ function createRequestId(): string {
   return globalThis.crypto.randomUUID();
 }
 
-function updateIdeaLocation(ideaId: string, stageNumber?: number): void {
+function updateIdeaLocation(
+  ideaId: string,
+  stageNumber?: number,
+): void {
   const params = new URLSearchParams({ idea: ideaId });
   if (stageNumber !== undefined) {
     params.set("stage", String(stageNumber));
@@ -1868,9 +1877,10 @@ export default function IdeasPage({
     }
   }
 
-  async function requestMentorGuidance(): Promise<void> {
+  async function requestMentorGuidance(messageOverride?: string): Promise<void> {
     const stage = IDEA_STAGES[currentStage - 1];
-    const message = mentorQuestions[currentStage]?.trim() ?? "";
+    const message =
+      messageOverride?.trim() ?? mentorQuestions[currentStage]?.trim() ?? "";
     if (
       !user ||
       !selectedIdea ||
@@ -3037,11 +3047,28 @@ export default function IdeasPage({
                                   mentorAvailability === "restored" ||
                                   mentorAvailability === "recovery_eligible") && (
                                   <div className="mt-4">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const stageTitle =
+                                          IDEA_STAGES[currentStage - 1]?.title ??
+                                          "این مرحله";
+                                        void requestMentorGuidance(
+                                          `با توجه به ایده و پاسخ‌های تأییدشدهٔ قبلی، برای شروع مرحلهٔ «${stageTitle}» یک پرسش اصلی متناسب با همین ایده بپرس. اگر کمک می‌کند، یک مثال کوتاه و فرضی هم بیاور.`,
+                                        );
+                                      }}
+                                      disabled={
+                                        mentorBusyStage !== null || !isOnline
+                                      }
+                                      className="min-h-10 rounded-lg border border-foreground/20 px-4 text-sm font-medium hover:bg-foreground/5 disabled:opacity-50"
+                                    >
+                                      از منتور بخواه سؤال متناسب بپرسد
+                                    </button>
                                     <label
                                       htmlFor="mentor-question"
-                                      className="mb-2 block text-sm font-medium"
+                                      className="mb-2 mt-4 block text-sm font-medium"
                                     >
-                                      پرسش اختیاری از راهنمای هوش مصنوعی
+                                      یا پرسش/نکتهٔ خودتان را بنویسید
                                     </label>
                                     <textarea
                                       id="mentor-question"

@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
-import IntakeWizard from "./intake-wizard";
+import IntakeFlow from "./intake-flow";
 import { buildAuthPath } from "@/lib/supabase/auth";
 import { createClient } from "@/lib/supabase/server";
 
@@ -39,5 +39,5 @@ async function IntakeContent({
     redirect(buildAuthPath("/auth/sign-in", returnTo));
   }
 
-  return <IntakeWizard initialIdea={initialIdea} />;
+  return <IntakeFlow initialIdea={initialIdea} participantId={user.id} />;
 }
